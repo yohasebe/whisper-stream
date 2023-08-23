@@ -21,7 +21,7 @@ function display_help() {
   echo "  -t, --token <value>      Set the OpenAI API token"
   echo "  -p, --path <value>       Set the output directory path"
   echo "  -r, --prompt <value>     Set the prompt for the API call"
-  echo "  -l, --language <value>   Set the language in ISO-639-1 format"
+  echo "  -l, --language <value>   Set the input language in ISO-639-1 format"
   echo "  -h, --help               Display this help message"
   exit 0
 }
@@ -110,6 +110,20 @@ output_files=()
 # Variable to store the accumulated text
 accumulated_text=""
 
+# Spinner
+function spinner() {
+  local pid=$1
+  local delay=0.1
+  local spinstr='|/-\'
+  while kill -0 $pid 2>/dev/null; do
+    local temp=${spinstr#?}
+    printf "\r%c " "$spinstr"
+    local spinstr=$temp${spinstr%"$temp"}
+    sleep $delay
+  done
+  printf "\r"
+}
+
 # Function to convert audio to text using the Whisper API
 function convert_audio_to_text() {
   local output_file=$1
@@ -136,7 +150,7 @@ function convert_audio_to_text() {
     return 1
   fi
 
-  transcription=$(echo "$response" | jq -r '.text')
+  transcription=$(echo "   $response" | jq -r '.text')
   
   # Check if the transcription was successful
   if [ $? -ne 0 ]; then
@@ -245,15 +259,16 @@ while true; do
   # Add the output file to the array
   output_files+=("$OUTPUT_FILE")
 
-  # record audio in raw format then convert to mp3
+  # Record audio in raw format then convert to mp3
   if [ "$DURATION" -gt 0 ]; then
     rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw - trim 0 "$DURATION" silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
-    sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE"
+    sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE" &
   else
     rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw \
       - silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
-      sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE"
+      sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE" &
   fi
+  spinner $!
 
   # Check if the audio file is created successfully
   if [ -s "$OUTPUT_FILE" ]; then
@@ -267,4 +282,3 @@ while true; do
     break
   fi
 done
-
