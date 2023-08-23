@@ -21,7 +21,7 @@ function display_help() {
   echo "  -t, --token <value>      Set the OpenAI API token"
   echo "  -p, --path <value>       Set the output directory path"
   echo "  -r, --prompt <value>     Set the prompt for the API call"
-  echo "  -l, --language <value>   Set the input language in ISO-639-1 format"
+  echo "  -l, --language <value>   Set the language in ISO-639-1 format"
   echo "  -h, --help               Display this help message"
   exit 0
 }
@@ -114,14 +114,13 @@ accumulated_text=""
 function spinner() {
   local pid=$1
   local delay=0.1
-  local spinstr='|/-\'
+  local spinstr='|/-\\'
   while kill -0 $pid 2>/dev/null; do
     local temp=${spinstr#?}
     printf "\r%c " "$spinstr"
     local spinstr=$temp${spinstr%"$temp"}
     sleep $delay
   done
-  printf "\r"
 }
 
 # Function to convert audio to text using the Whisper API
@@ -150,7 +149,7 @@ function convert_audio_to_text() {
     return 1
   fi
 
-  transcription=$(echo "   $response" | jq -r '.text')
+  transcription=$(echo "$response" | jq -r '.text')
   
   # Check if the transcription was successful
   if [ $? -ne 0 ]; then
@@ -158,18 +157,21 @@ function convert_audio_to_text() {
     return 1
   fi
 
+  echo -n -e '\r'
   echo "$transcription"
   
   # Remove the output audio file
   rm -f "$output_file"
   
   # Accumulate the transcribed text
-  accumulated_text+="$transcription
-"
+  echo "$transcription" >> temp_transcriptions.txt
 }
 
 # Function to handle script termination
 function handle_exit() {
+  # Wait for all background jobs to finish
+  wait
+
   # Kill all child processes
   pkill -P $$
 
@@ -185,14 +187,16 @@ function handle_exit() {
   # Copy the accumulated text to the clipboard
   case "$(uname -s)" in
     Darwin)
-      echo "$accumulated_text" | pbcopy
+      echo "$accumulated_text" > temp.txt
+      cat temp.txt | pbcopy
+      rm temp.txt
       ;;
     Linux)
-      echo "$accumulated_text" | xclip -selection clipboard
+      echo "$accumulated_text" | xclip -selection clipboard >&1
       ;;
     CYGWIN*|MINGW32*|MSYS*|MINGW*)
       # This is a rough guess that you're on Windows Subsystem for Linux
-      echo "$accumulated_text" | clip.exe
+      echo "$accumulated_text" | clip.exe >&1
       ;;
     *)
       echo "Unknown OS, cannot copy to clipboard"
@@ -262,18 +266,30 @@ while true; do
   # Record audio in raw format then convert to mp3
   if [ "$DURATION" -gt 0 ]; then
     rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw - trim 0 "$DURATION" silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
-    sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE" &
+    sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE"
   else
     rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw \
       - silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
-      sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE" &
+      sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE"
   fi
-  spinner $!
-
+  
   # Check if the audio file is created successfully
   if [ -s "$OUTPUT_FILE" ]; then
     # Convert the MP3 audio to text using the Whisper API
-    convert_audio_to_text "$OUTPUT_FILE"
+    convert_audio_to_text "$OUTPUT_FILE" &
+    pid=$!
+    spinner $pid
+    wait $pid
+    # Read the transcriptions into the accumulated_text variable
+    while IFS= read -r line; do
+      if [ -z "$accumulated_text" ]; then
+        accumulated_text="$line"
+      else
+        accumulated_text+=" $line"
+      fi
+    done < temp_transcriptions.txt
+    # Clear the temporary transcriptions file
+    > temp_transcriptions.txt
   else
     echo "No audio recorded."
   fi
