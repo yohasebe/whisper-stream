@@ -83,6 +83,10 @@ Here are some usage examples with a brief comment on each of them:
 
 This will start the script with the default settings, recording audio continuously and transcribing it into text using the default volume threshold and silence length. If the OpenAI API token is not provided as an argument, the script will automatically use the value of the `OPENAI_API_KEY` environment variable if it is set.
 
+`./whisper-stream.sh -l ja`
+
+This will start the script with the input language specified as Japanese; see the [Wikipedia](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) page for ISO-639-1 language codes.
+
 `./whisper-stream.sh -v 2% -s 2 -o -d 60 -t your_openai_api_token -p /path/to/output/directory`
 
 This example sets the minimum volume threshold to 2%, the minimum silence length to 2 seconds, enables one-shot mode, sets the recording duration to 60 seconds, specifies the OpenAI API token, and sets the output directory path to `/path/to/output/directory`. If the OpenAI API token is not provided as an argument, the script will automatically use the value of the `OPENAI_API_KEY` environment variable if it is set.
