@@ -96,3 +96,11 @@ This will start the script with the input language specified as Japanese; see th
 `./whisper-stream.sh -v 2% -s 2 -o -d 60 -t your_openai_api_token -p /path/to/output/directory`
 
 This example sets the minimum volume threshold to 2%, the minimum silence length to 2 seconds, enables one-shot mode, sets the recording duration to 60 seconds, specifies the OpenAI API token, and sets the output directory path to `/path/to/output/directory`. If the OpenAI API token is not provided as an argument, the script will automatically use the value of the `OPENAI_API_KEY` environment variable if it is set.
+
+## Author
+
+Yoichiro Hasebe <yohasebe@gmail.com>
+
+## License
+
+RSyntaxTree is distributed under the [MIT License](http://www.opensource.org/licenses/mit-license.php).
