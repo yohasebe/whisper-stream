@@ -1,8 +1,10 @@
 #!/bin/bash
 
+VERSION="1.0.0"
+
 # Set the default sensitivity values
 MIN_VOLUME=1%
-SILENCE_LENGTH=2.0
+SILENCE_LENGTH=1.5
 ONESHOOT=false
 DURATION=0
 TOKEN=""
@@ -23,6 +25,7 @@ function display_help() {
   echo "  -r, --prompt <value>     Set the prompt for the API call"
   echo "  -l, --language <value>   Set the language in ISO-639-1 format"
   echo "  -h, --help               Display this help message"
+  echo "To stop the app, press Ctrl+C"
   exit 0
 }
 
@@ -110,6 +113,23 @@ output_files=()
 # Variable to store the accumulated text
 accumulated_text=""
 
+# Function to display current settings
+function display_settings() {
+  echo ""
+  echo $'\e[1;34m'Whisper Stream Transcriber$'\e[0m' ${VERSION}
+  echo $'\e[1;33m'---------------------------------$'\e[0m'
+  echo "Current settings:"
+  echo "  Minimum volume: $MIN_VOLUME"
+  echo "  Silence length: $SILENCE_LENGTH seconds"
+  echo "  Input language: ${LANGUAGE:-Not specified}"
+  echo $'\e[1;33m'---------------------------------$'\e[0m'
+  echo "To stop the app, press Ctrl+C"
+  echo ""
+}
+
+# Call the functions to display current settings
+display_settings
+
 # Spinner
 function spinner() {
   local pid=$1
@@ -117,7 +137,7 @@ function spinner() {
   local spinstr='|/-\\'
   while kill -0 $pid 2>/dev/null; do
     local temp=${spinstr#?}
-    printf "\r%c " "$spinstr"
+    printf "\r\e[1;31m%c\e[0m" "$spinstr"
     local spinstr=$temp${spinstr%"$temp"}
     sleep $delay
   done
@@ -266,7 +286,7 @@ while true; do
   # Add the output file to the array
   output_files+=("$OUTPUT_FILE")
 
-  echo -n "▸ "
+  echo -n $'\e[1;32m'▶ $'\e[0m'
 
   # Record audio in raw format then convert to mp3
   if [ "$DURATION" -gt 0 ]; then
