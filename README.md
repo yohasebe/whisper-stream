@@ -1,5 +1,7 @@
 # Whisper Voice-to-Text Stream Transcriber
 
+![whisper-stream](https://github.com/yohasebe/whisper-stream/assets/18207/ea8e3eff-f4da-4749-bc5f-6d58ed119b13)
+
 This project is a bash script that uses the [OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text) to transcribe stream audio into text. It records audio using SoX, detects silence, and transcribes the audio into text. The transcribed text is automatically copied to the system clipboard for immediate use and also saved in a text file for record keeping.
 
 ## Installation
