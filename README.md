@@ -103,4 +103,4 @@ Yoichiro Hasebe <yohasebe@gmail.com>
 
 ## License
 
-RSyntaxTree is distributed under the [MIT License](http://www.opensource.org/licenses/mit-license.php).
+This software is distributed under the [MIT License](http://www.opensource.org/licenses/mit-license.php).
