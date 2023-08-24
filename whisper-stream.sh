@@ -2,7 +2,7 @@
 
 # Set the default sensitivity values
 MIN_VOLUME=1%
-SILENCE_LENGTH=1.5
+SILENCE_LENGTH=2.0
 ONESHOOT=false
 DURATION=0
 TOKEN=""
@@ -180,6 +180,9 @@ function handle_exit() {
     rm -f "$file"
   done
 
+  # Remove temp transcriptions file
+  rm -f temp_transcriptions.txt
+
   # Create a text file with the accumulated text in the specified directory
   timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
   echo "$accumulated_text" > "$OUTPUT_DIR/transcription_$timestamp.txt"
@@ -263,6 +266,8 @@ while true; do
   # Add the output file to the array
   output_files+=("$OUTPUT_FILE")
 
+  echo -n "▸ "
+
   # Record audio in raw format then convert to mp3
   if [ "$DURATION" -gt 0 ]; then
     rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw - trim 0 "$DURATION" silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
@@ -275,17 +280,20 @@ while true; do
   
   # Check if the audio file is created successfully
   if [ -s "$OUTPUT_FILE" ]; then
-    # Convert the MP3 audio to text using the Whisper API
+    # Convert the MP3 audio to text using the Whisper API in the background
     convert_audio_to_text "$OUTPUT_FILE" &
+
+    # Captures the process ID of the last executed background command.
     pid=$!
     spinner $pid
-    wait $pid
+    # wait $pid
     # Read the transcriptions into the accumulated_text variable
     while IFS= read -r line; do
       if [ -z "$accumulated_text" ]; then
         accumulated_text="$line"
       else
-        accumulated_text+=" $line"
+        accumulated_text+="
+$line"
       fi
     done < temp_transcriptions.txt
     # Clear the temporary transcriptions file
