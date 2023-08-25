@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.4"
+VERSION="1.0.5"
 
 # Set the default sensitivity values
 MIN_VOLUME=1%
