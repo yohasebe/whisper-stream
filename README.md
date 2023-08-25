@@ -10,30 +10,25 @@ After transcription, the text is automatically copied to your system's **clipboa
 
 ## Installation
 
-1. Download the `whisper-stream.sh` script to your local machine.
+### MacOS
 
-2. Make the script executable by running the following command:
+1. Install [Homebrew](https://brew.sh/)
 
-```bash
-chmod +x whisper-stream.sh
+2. Run the following commands:
+
+```
+brew tap yohasebe/whisper-stream
+brew install whisper-stream
 ```
 
-3. To make the script available universally, move it to `/usr/local/bin` directory:
+### Linux and Windows
 
-```bash
-sudo mv whisper-stream.sh /usr/local/bin
-```
-
-## Dependencies
-
-This script requires the following dependencies:
+1. Install the following dependencies:
 
 - `curl`
 - `jq`
 - `sox`
-- `xclip` or `pbcopy` or `clip.exe` depending on your OS
-
-### Linux
+- `xclip` (for Linux)
 
 On a Debian-based Linux distribution, you can install these dependencies with:
 
@@ -41,32 +36,30 @@ On a Debian-based Linux distribution, you can install these dependencies with:
 sudo apt-get install curl jq sox xclip
 ```
 
-### macOS
-
-On macOS, you can install these dependencies with Homebrew:
+2. Identify a directory in your system's PATH variable where you want to place the script. You can check the directories in your PATH variable by running the following command:
 
 ```bash
-brew install curl jq sox
+echo $PATH
 ```
 
-`pbcopy` is pre-installed on macOS.
-
-### Windows
-
-On Windows, you can install these dependencies with Chocolatey:
+3. Move the `whisper-stream` script to the chosen directory. For example, if you want to move it to `/usr/local/bin`, run the following command:
 
 ```bash
-choco install curl jq sox
+mv whisper-stream /usr/local/bin
 ```
 
-`clip.exe` is pre-installed on Windows.
+4. Make sure the script is executable by running the following command:
+
+```bash
+chmod +x /usr/local/bin/whisper-stream
+```
 
 ## Usage
 
 You can start the script with the following command:
 
 ```bash
-./whisper-stream.sh [options]
+whisper-stream [options]
 ```
 
 The available options are:
@@ -85,15 +78,15 @@ The available options are:
 
 Here are some usage examples with a brief comment on each of them:
 
-`./whisper-stream.sh`
+`whisper-stream`
 
 This will start the script with the default settings, recording audio continuously and transcribing it into text using the default volume threshold and silence length. If the OpenAI API token is not provided as an argument, the script will automatically use the value of the `OPENAI_API_KEY` environment variable if it is set.
 
-`./whisper-stream.sh -l ja`
+`whisper-stream -l ja`
 
 This will start the script with the input language specified as Japanese; see the [Wikipedia](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) page for ISO-639-1 language codes.
 
-`./whisper-stream.sh -v 2% -s 2 -o -d 60 -t your_openai_api_token -p /path/to/output/directory`
+`whisper-stream -v 2% -s 2 -o -d 60 -t your_openai_api_token -p /path/to/output/directory`
 
 This example sets the minimum volume threshold to 2%, the minimum silence length to 2 seconds, enables one-shot mode, sets the recording duration to 60 seconds, specifies the OpenAI API token, and sets the output directory path `/path/to/output/directory` to create a transcription text file.
 
