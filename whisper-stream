@@ -122,7 +122,7 @@ accumulated_text=""
 # Function to get the name of the current audio input device on macOS
 function get_macos_input_device() {
   # if SwitchAudioSource command available
-  if [ -x "$(command -v SwitchfAudioSource)" ]; then
+  if [ -x "$(command -v SwitchAudioSource)" ]; then
     local input_device=$(SwitchAudioSource -t input -c)
     echo "$input_device"
     return
