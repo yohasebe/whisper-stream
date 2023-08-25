@@ -4,9 +4,9 @@
 
 This is a **bash script** that utilizes the [OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text) to **transcribe continuous voice input into text**. It uses SoX for audio recording and includes a built-in feature that detects silence between speech segments.
 
-The script is designed to convert voice audio into text each time the system identifies a **specified duration of silence**. This essentially enables the Whisper API to function as if it were capable of real-time voice-to-text conversion.
+The script is designed to convert voice audio into text each time the system identifies a **specified duration of silence**. This enables the Whisper API to function as if it were capable of real-time voice-to-text conversion.
 
-After transcription, the text is automatically copied to your system's **clipboard** for immediate use. It is also saved in a specified directory as a **text file**.
+After transcription, the text is automatically copied to your system's **clipboard** for immediate use. It can also be saved in a specified directory as a **text file**.
 
 ## Installation
 
@@ -76,7 +76,7 @@ The available options are:
 - `-o, --oneshot`: Enable one-shot mode
 - `-d, --duration <value>`: Set the recording duration in seconds (default: 0, continuous)
 - `-t, --token <value>`: Set the OpenAI API token
-- `-p, --path <value>`: Set the output directory path
+- `-p, --path <value>`: Set the output directory path to create the transcription file
 - `-r, --prompt <value>`: Set the prompt for the API call
 - `-l, --language <value>`: Set the input language in ISO-639-1 format
 - `-h, --help`: Display the help message
@@ -95,7 +95,7 @@ This will start the script with the input language specified as Japanese; see th
 
 `./whisper-stream.sh -v 2% -s 2 -o -d 60 -t your_openai_api_token -p /path/to/output/directory`
 
-This example sets the minimum volume threshold to 2%, the minimum silence length to 2 seconds, enables one-shot mode, sets the recording duration to 60 seconds, specifies the OpenAI API token, and sets the output directory path to `/path/to/output/directory`. If the OpenAI API token is not provided as an argument, the script will automatically use the value of the `OPENAI_API_KEY` environment variable if it is set.
+This example sets the minimum volume threshold to 2%, the minimum silence length to 2 seconds, enables one-shot mode, sets the recording duration to 60 seconds, specifies the OpenAI API token, and sets the output directory path `/path/to/output/directory` to create a transcription text file.
 
 ## Author
 

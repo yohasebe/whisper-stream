@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 
 # Set the default sensitivity values
 MIN_VOLUME=1%
@@ -21,7 +21,7 @@ function display_help() {
   echo "  -o, --oneshot            Enable one-shot mode"
   echo "  -d, --duration <value>   Set the recording duration in seconds (default: 0, continuous)"
   echo "  -t, --token <value>      Set the OpenAI API token"
-  echo "  -p, --path <value>       Set the output directory path"
+  echo "  -p, --path <value>       Set the output directory path to create the transcription file"
   echo "  -r, --prompt <value>     Set the prompt for the API call"
   echo "  -l, --language <value>   Set the language in ISO-639-1 format"
   echo "  -h, --help               Display this help message"
@@ -81,11 +81,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-# If no output directory is provided as an argument, set it to the current directory
-if [ -z "$OUTPUT_DIR" ]; then
-  OUTPUT_DIR="."
-fi
 
 # If no token is provided as an argument, try to get it from the environment variable
 if [ -z "$TOKEN" ]; then
@@ -203,9 +198,11 @@ function handle_exit() {
   # Remove temp transcriptions file
   rm -f temp_transcriptions.txt
 
-  # Create a text file with the accumulated text in the specified directory
-  timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
-  echo "$accumulated_text" > "$OUTPUT_DIR/transcription_$timestamp.txt"
+  # If output directory is specified, create a text file with the accumulated text in the specified directory
+  if [ -n "$OUTPUT_DIR" ]; then
+    timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
+    echo "$accumulated_text" > "$OUTPUT_DIR/transcription_$timestamp.txt"
+  fi
 
   # Copy the accumulated text to the clipboard
   case "$(uname -s)" in
