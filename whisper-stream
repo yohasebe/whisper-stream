@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.3"
+VERSION="1.0.4"
 
 # Set the default sensitivity values
 MIN_VOLUME=1%
@@ -24,6 +24,7 @@ function display_help() {
   echo "  -p, --path <value>       Set the output directory path to create the transcription file"
   echo "  -r, --prompt <value>     Set the prompt for the API call"
   echo "  -l, --language <value>   Set the language in ISO-639-1 format"
+  echo "  -V, --version            Show the version number"
   echo "  -h, --help               Display this help message"
   echo "To stop the app, press Ctrl+C"
   exit 0
@@ -72,6 +73,10 @@ while [[ $# -gt 0 ]]; do
       shift
       shift
       ;;
+    -V|--version)
+      SHOW_VERSION=true
+      shift
+      ;;
     -h|--help)
       display_help
       ;;
@@ -81,6 +86,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# If the version option is specified, display the version number and exit
+if [ "$SHOW_VERSION" = true ]; then
+  echo "Whisper Stream Transcriber version: $VERSION"
+  exit
+fi
 
 # If no token is provided as an argument, try to get it from the environment variable
 if [ -z "$TOKEN" ]; then
@@ -108,18 +119,60 @@ output_files=()
 # Variable to store the accumulated text
 accumulated_text=""
 
+# Function to get the name of the current audio input device on macOS
+function get_macos_input_device() {
+  # if SwitchAudioSource command available
+  if [ -x "$(command -v SwitchfAudioSource)" ]; then
+    local input_device=$(SwitchAudioSource -t input -c)
+    echo "$input_device"
+    return
+  fi
+}
+
+# Function to get the name of the current audio input device on Linux
+function get_linux_input_device() {
+  # if arecord command available
+  if [ -x "$(command -v arecord)" ]; then
+    local input_device=$(arecord -l | grep -oP "(?<=card )\d+(?=:\s.*\[)")
+    echo "hw:$input_device"
+    return
+  fi
+}
+
 # Function to display current settings
 function display_settings() {
   echo ""
   echo $'\e[1;34m'Whisper Stream Transcriber$'\e[0m' ${VERSION}
-  echo $'\e[1;33m'---------------------------------$'\e[0m'
+  echo $'\e[1;33m'----------------------------------------$'\e[0m'
   echo "Current settings:"
   echo "  Minimum volume: $MIN_VOLUME"
   echo "  Silence length: $SILENCE_LENGTH seconds"
   echo "  Input language: ${LANGUAGE:-Not specified}"
-  echo $'\e[1;33m'---------------------------------$'\e[0m'
-  echo "To stop the app, press Ctrl+C"
+  
+  # Get the input device based on the operating system
+  local input_device=$(get_input_device)
+  if [ -n "$input_device" ]; then
+    echo "  Input device: $input_device"
+  fi
+  
+  echo $'\e[1;33m'----------------------------------------$'\e[0m'
+  echo To stop the app, press $'\e[0;36m'Ctrl+C$'\e[0m'
   echo ""
+}
+
+# Function to get the name of the current audio input device based on the operating system
+function get_input_device() {
+  case "$(uname)" in
+    Darwin)
+      get_macos_input_device
+      ;;
+    Linux)
+      get_linux_input_device
+      ;;
+    *)
+      echo "Unknown operating system"
+      ;;
+  esac
 }
 
 # Call the functions to display current settings
@@ -184,6 +237,10 @@ function convert_audio_to_text() {
 
 # Function to handle script termination
 function handle_exit() {
+
+  # Clear the line
+  echo -e '\r'
+
   # Wait for all background jobs to finish
   wait
 
@@ -207,16 +264,24 @@ function handle_exit() {
   # Copy the accumulated text to the clipboard
   case "$(uname -s)" in
     Darwin)
-      echo "$accumulated_text" > temp.txt
-      cat temp.txt | pbcopy
-      rm temp.txt
+      # if $accumulated_text is not empty
+      if [ -n "$accumulated_text" ]; then
+        echo "$accumulated_text" > temp.txt
+        cat temp.txt | pbcopy
+        rm temp.txt
+        echo $'\e[0;36m'Transcription copied to clipboard.$'\e[0m'
+      fi
       ;;
     Linux)
       echo "$accumulated_text" | xclip -selection clipboard >&1
       ;;
     CYGWIN*|MINGW32*|MSYS*|MINGW*)
       # This is a rough guess that you're on Windows Subsystem for Linux
-      echo "$accumulated_text" | clip.exe >&1
+      # if $accumulated_text is not empty
+      if [ -n "$accumulated_text" ]; then
+        echo "$accumulated_text" | clip.exe >&1
+        echo $'\e[0;36m'Transcription copied to clipboard.$'\e[0m'
+      fi
       ;;
     *)
       echo "Unknown OS, cannot copy to clipboard"
