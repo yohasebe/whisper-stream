@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # Set the default sensitivity values
 MIN_VOLUME=1%
@@ -290,8 +290,9 @@ while true; do
 
   # Record audio in raw format then convert to mp3
   if [ "$DURATION" -gt 0 ]; then
-    rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw - trim 0 "$DURATION" silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
-    sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE"
+    rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw \
+      - trim 0 "$DURATION" silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
+      sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE"
   else
     rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw \
       - silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
@@ -326,3 +327,5 @@ $line"
     break
   fi
 done
+
+handle_exit
