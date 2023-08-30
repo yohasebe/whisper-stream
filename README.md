@@ -1,4 +1,4 @@
-# Whisper Voice-to-Text Stream Transcriber
+# Whisper Stream Voice-to-Text Transcriber
 
 ![whisper-stream](https://github.com/yohasebe/whisper-stream/assets/18207/7b419ba0-a621-40ac-82c6-9c498e038e0d)
 
@@ -27,11 +27,12 @@ Run the following commands:
 - `jq`
 - `sox`
 - `xclip` (for Linux)
+- `alsa-utils` (optional for Linux)
 
 On a Debian-based Linux distribution, you can install these dependencies with:
 
 ```bash
-sudo apt-get install curl jq sox xclip
+sudo apt-get install curl jq sox xclip alsa-utils
 ```
 
 2. Identify a directory in your system's PATH variable where you want to place the script. You can check the directories in your PATH variable by running the following command:
@@ -71,6 +72,7 @@ The available options are:
 - `-r, --prompt <value>`: Set the prompt for the API call
 - `-l, --language <value>`: Set the input language in ISO-639-1 format
 - `-f, --file <value>`: Set the audio file to be transcribed
+- `-p2, --pipe-to <cmd>`: Pipe the transcribed text to the specified command (e.g., 'wc -w')
 - `-V, --version`: Show the version number
 - `-h, --help`: Display the help message
 
@@ -94,6 +96,9 @@ This example sets the minimum volume threshold to 2%, the minimum silence length
 
 This will transcribe the audio file located at `~/Desktop/interview.mp3`. The input language is specified as English. The output directory is set to `~Desktop/transcripts` to create a transcription text file.
 
+`> whisper-stream -p2 'wc -w'`
+
+This will start the script with the default settings for recording audio and transcribing it. After transcription, the transcribed text will be piped to the `wc -w` command, which counts the number of words in the text. The result, indicating the total word count, will be printed below the original transcribed output.
 
 ## Restrictions
 
