@@ -1,10 +1,10 @@
-# Whisper Stream Voice-to-Text Transcriber
+# Whisper Stream Speech-to-Text Transcriber
 
 ![whisper-stream](https://github.com/yohasebe/whisper-stream/assets/18207/7b419ba0-a621-40ac-82c6-9c498e038e0d)
 
 This is a **bash script** that utilizes the [OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text) to **transcribe continuous voice input into text**. It uses SoX for audio recording and includes a built-in feature that detects silence between speech segments.
 
-The script is designed to convert voice audio into text each time the system identifies a **specified duration of silence**. This enables the Whisper API to function as if it were capable of real-time voice-to-text conversion. It is also possible to specify the audio file to be converted by Whisper.
+The script is designed to convert voice audio into text each time the system identifies a **specified duration of silence**. This enables the Whisper API to function as if it were capable of real-time speech-to-text conversion. It is also possible to specify the audio file to be converted by Whisper.
 
 After transcription, the text is automatically copied to your system's **clipboard** for immediate use. It can also be saved in a specified directory as a **text file**.
 
@@ -72,6 +72,7 @@ The available options are:
 - `-r, --prompt <value>`: Set the prompt for the API call
 - `-l, --language <value>`: Set the input language in ISO-639-1 format
 - `-f, --file <value>`: Set the audio file to be transcribed
+- `-tr, --translate`: Translate the transcribed text to English
 - `-p2, --pipe-to <cmd>`: Pipe the transcribed text to the specified command (e.g., 'wc -w')
 - `-V, --version`: Show the version number
 - `-h, --help`: Display the help message
@@ -87,6 +88,10 @@ This will start the script with the default settings, recording audio continuous
 `> whisper-stream -l ja`
 
 This will start the script with the input language specified as Japanese; see the [Wikipedia](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) page for ISO-639-1 language codes.
+
+`> whisper-stream -tr`
+
+It transcribes the spoken audio in whatever language and presents the text translated into English. Currently, the target language for translation is limited to English.
 
 `> whisper-stream -v 2% -s 2 -o -d 60 -t your_openai_api_token`
 
@@ -106,7 +111,7 @@ Restrictions such as the languages that can be converted by this program, the ty
 
 ## Author
 
-Yoichiro Hasebe <yohasebe@gmail.com>
+Yoichiro Hasebe [<yohasebe@gmail.com>]
 
 ## License
 
