@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default configuration and versioning
-VERSION="1.0.8"
+VERSION="1.0.9"
 
 # Setting the default values for the script parameters
 MIN_VOLUME=1%                  # Minimum volume threshold
@@ -16,6 +16,7 @@ LANGUAGE=""                    # Language code for transcription
 TRANSLATE=""                   # Flag to indicate translation to English
 AUDIO_FILE=""                  # Specific audio file for transcription
 PIPE_TO_CMD=""                 # Command to pipe the transcribed text to
+QUIET_MODE=false               # Flag to determine if the banner and settings should be suppressed
 
 # Display help information for script usage
 function display_help() {
@@ -33,6 +34,7 @@ function display_help() {
   echo "  -tr, --translate         Translate the transcribed text to English"
   echo "  -p2, --pipe-to <cmd>     Pipe the transcribed text to the specified command (e.g., 'wc -m')"
   echo "  -V, --version            Show the version number"
+  echo "  -q, --quiet              Suppress the banner and settings"
   echo "  -h, --help               Display this help message"
   echo "To stop the app, press Ctrl+C"
   exit 0
@@ -187,6 +189,10 @@ while [[ $# -gt 0 ]]; do
       SHOW_VERSION=true
       shift
       ;;
+    -q|--quiet)
+      QUIET_MODE=true
+      shift
+      ;;
     -h|--help)
       display_help
       ;;
@@ -213,7 +219,6 @@ if [ -z "$TOKEN" ]; then
   echo "No OpenAI API key provided. Please provide it as an argument or environment variable."
   exit 1
 fi
-
 
 output_files=() # Array to store the names of output audio files
 
@@ -254,6 +259,10 @@ function get_linux_input_volume() {
 
 # Function to display current settings
 function display_settings() {
+  if [ "$QUIET_MODE" = true ]; then
+    return
+  fi
+
   echo ""
   echo $'\e[1;34m'Whisper Stream Speech-to-Text Transcriber$'\e[0m' ${VERSION}
   echo $'\e[1;33m'-----------------------------------------------$'\e[0m'
@@ -461,24 +470,29 @@ function handle_exit() {
 
 # If an audio file is provided, convert it to text and then exit
 if [ -n "$AUDIO_FILE" ]; then
-  echo ""
-  echo $'\e[1;34m'Whisper Stream Transcriber$'\e[0m' ${VERSION}
-  echo $'\e[1;33m'-----------------------------------------------$'\e[0m'
-  echo "Current settings:"
-  echo "  Input language: ${LANGUAGE:-Not specified}"
 
-  if [ -n "$TRANSLATE" ]; then
-    echo "  Translate to English: $TRANSLATE"
-  fi
-  
-  if [ -n "$OUTPUT_DIR" ]; then
-    echo "  Output Dir: $OUTPUT_DIR"
-  fi
+  # print banner and settings unless quiet mode is enabled
+  # this is necessary for the data to be available when the script terminates
+  if [ "$QUIET_MODE" = false ]; then
+    echo ""
+    echo $'\e[1;34m'Whisper Stream Transcriber$'\e[0m' ${VERSION}
+    echo $'\e[1;33m'-----------------------------------------------$'\e[0m'
+    echo "Current settings:"
+    echo "  Input language: ${LANGUAGE:-Not specified}"
 
-  echo "  Input file: $AUDIO_FILE"
-  echo $'\e[1;33m'-----------------------------------------------$'\e[0m'
-  echo $'\e[0;36m'Please wait ...$'\e[0m'
-  echo ""
+    if [ -n "$TRANSLATE" ]; then
+      echo "  Translate to English: $TRANSLATE"
+    fi
+    
+    if [ -n "$OUTPUT_DIR" ]; then
+      echo "  Output Dir: $OUTPUT_DIR"
+    fi
+
+    echo "  Input file: $AUDIO_FILE"
+    echo $'\e[1;33m'-----------------------------------------------$'\e[0m'
+    echo $'\e[0;36m'Please wait ...$'\e[0m'
+    echo ""
+  fi
 
   convert_audio_to_text "$AUDIO_FILE"
   handle_exit
@@ -532,3 +546,4 @@ done
 
 # Handle final cleanup and exit
 handle_exit
+

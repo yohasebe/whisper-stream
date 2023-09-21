@@ -74,6 +74,7 @@ The available options are:
 - `-f, --file <value>`: Set the audio file to be transcribed
 - `-tr, --translate`: Translate the transcribed text to English
 - `-p2, --pipe-to <cmd>`: Pipe the transcribed text to the specified command (e.g., 'wc -w')
+- `-q,  --quiet`: Suppress the banner and settings
 - `-V, --version`: Show the version number
 - `-h, --help`: Display the help message
 
