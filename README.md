@@ -69,7 +69,7 @@ The available options are:
 - `-d, --duration <value>`: Set the recording duration in seconds (default: 0, continuous)
 - `-t, --token <value>`: Set the OpenAI API token
 - `-p, --path <value>`: Set the output directory path to create the transcription file
--  -g, --granularities <value> Set the timestamp granularities (segment or word)
+- `-g, --granularities <value>`: Set the timestamp granularities (segment or word)
 - `-r, --prompt <value>`: Set the prompt for the API call
 - `-l, --language <value>`: Set the input language in ISO-639-1 format
 - `-f, --file <value>`: Set the audio file to be transcribed
