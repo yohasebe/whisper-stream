@@ -107,7 +107,7 @@ This will transcribe the audio file located at `~/Desktop/interview.mp3`. The in
 
 This will start the script with the default settings for recording audio and transcribing it. After transcription, the transcribed text will be piped to the `wc -w` command, which counts the number of words in the text. The result, indicating the total word count, will be printed below the original transcribed output.
 
-> whisper-stream -v segment -p ~/Desktop
+`> whisper-stream -v segment -p ~/Desktop`
 
 The `-g` option allows you to specify the mode for timestamp granularities. The available modes are segment or word, and specifying either will display detailed transcript data in JSON format. When used in conjunction with the `-p` option to specify a directory, the results will be saved as a JSON file. For more information, see the [`timestamp_granularities[]`](https://platform.openai.com/docs/api-reference/audio/createTranscription#audio-createtranscription-timestamp_granularities) section in OpenAI Whisper API reference.
 
