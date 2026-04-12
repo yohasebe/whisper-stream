@@ -2,11 +2,20 @@
 
 ![whisper-stream](https://github.com/yohasebe/whisper-stream/assets/18207/7b419ba0-a621-40ac-82c6-9c498e038e0d)
 
-This is a **bash script** that utilizes the [OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text) to **transcribe continuous voice input into text**. It uses SoX for audio recording and includes a built-in feature that detects silence between speech segments.
+**whisper-stream** is a single bash script for **real-time speech-to-text**. It records audio, detects silence between speech segments, and transcribes each segment using either the [OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text) or a local [whisper.cpp](https://github.com/ggml-org/whisper.cpp) binary.
 
-The script is designed to convert voice audio into text each time the system identifies a **specified duration of silence**. This enables the Whisper API to function as if it were capable of real-time speech-to-text conversion. It is also possible to specify the audio file to be converted by Whisper.
+The script works as a **pipe-native CLI primitive**: with `--stdout` or `--jsonl`, transcriptions flow to stdout with no side effects, so you can compose them with `jq`, shell loops, tmux panes, or any command-line AI coding agent. Without those flags, transcriptions are copied to the system clipboard and optionally saved as files.
 
-After transcription, the text is automatically copied to your system's **clipboard** for immediate use. It can also be saved in a specified directory as a **text file**.
+Use cases range from one-off dictation to always-on local transcription for voice-driven shell workflows.
+
+## Features
+
+- **Pipe-native output**: `--stdout` for plain text and `--jsonl` for one JSON object per utterance, both suitable for composition with shell tools and AI agents
+- **Two backends**: OpenAI Whisper API for quality and language coverage, or local `whisper.cpp` for free, offline, private continuous dictation
+- **Multiple output modes**: plain text, JSON Lines, clipboard copy, or saved files — pick the right one for your workflow
+- **Multiple API models**: `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (default), `gpt-4o-transcribe-diarize`
+- **Speaker diarization** with optional known-speaker registration (API backend, `gpt-4o-transcribe-diarize` only)
+- **Real-time or file mode** with silence-based utterance segmentation
 
 ## Installation
 
@@ -23,36 +32,17 @@ That's it! The `whisper-stream` command should now be available in your terminal
 
 ### Manual Installation
 
-1. Install the following dependencies:
-
-- `curl`
-- `jq`
-- `sox`
-- `xclip` (for Linux)
-- `alsa-utils` (optional for Linux)
-
-On a Debian-based Linux distribution, you can install these dependencies with:
+Dependencies: `curl`, `jq`, `sox` (plus `xclip` on Linux). Optional: `whisper-cpp` for `--backend local` — see [Local backend](#local-backend-whispercpp).
 
 ```bash
-sudo apt-get install curl jq sox xclip alsa-utils
+brew install curl jq sox                    # macOS
+sudo apt-get install curl jq sox xclip      # Debian/Ubuntu
 ```
 
-2. Identify a directory in your system's PATH variable where you want to place the script. You can check the directories in your PATH variable by running the following command:
+Then place `whisper-stream` somewhere in your `$PATH` and make it executable:
 
 ```bash
-> echo $PATH
-```
-
-3. Move the `whisper-stream` script to the chosen directory. For example, if you want to move it to `/usr/local/bin`, run the following command:
-
-```bash
-> mv whisper-stream /usr/local/bin
-```
-
-4. Make sure the script is executable by running the following command:
-
-```bash
-> chmod +x /usr/local/bin/whisper-stream
+install -m 755 whisper-stream /usr/local/bin/
 ```
 
 ## Usage
@@ -65,57 +55,135 @@ You can start the script with the following command:
 
 The available options are:
 
-- `-v, --volume <value>`: Set the minimum volume threshold (default: 1%)
+**Recording Options:**
+- `-v, --volume <value>`: Minimum volume threshold, as percent (`1%`) or dBFS (`-30d`). Default: `1%` (≈ -40 dBFS).
 - `-s, --silence <value>`: Set the minimum silence length (default: 1.5)
 - `-o, --oneshot`: Enable one-shot mode
 - `-d, --duration <value>`: Set the recording duration in seconds (default: 0, continuous)
-- `-t, --token <value>`: Set the OpenAI API token
-- `-p, --path <value>`: Set the output directory path to create the transcription file
-- `-g, --granularities <value>`: Set the timestamp granularities (segment or word)
-- `-r, --prompt <value>`: Set the prompt for the API call
-- `-l, --language <value>`: Set the input language in ISO-639-1 format
 - `-f, --file <value>`: Set the audio file to be transcribed
+
+**Backend Options:**
+- `-b, --backend <value>`: Transcription backend: `api` (OpenAI, default) or `local` (whisper.cpp, runs on your machine). See [Local backend](#local-backend-whispercpp) below.
+- `--model-path <file>`: Path to a ggml model file for the local backend. Falls back to `$WHISPER_STREAM_MODEL` and then `~/.whisper-stream/models/ggml-base.en.bin`.
+
+**API Options (backend=api):**
+- `-t, --token <value>`: Set the OpenAI API token
+- `-m, --model <value>`: Set the model. Any name is passed through to the API; unknown names only produce a warning so you can opt into dated snapshots such as `gpt-4o-mini-transcribe-2025-12-15`. Known values: `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (default, OpenAI-recommended), `gpt-4o-transcribe-diarize`.
+- `-r, --prompt <value>`: Set the prompt (works on both backends)
+- `-l, --language <value>`: Set the input language in ISO-639-1 format
 - `-tr, --translate`: Translate the transcribed text to English
+
+**Output Options:**
+- `-p, --path <value>`: Set the output directory path to create the transcription file
+- `-g, --granularities <value>`: Set the timestamp granularities (segment or word, whisper-1 only)
 - `-p2, --pipe-to <cmd>`: Pipe the transcribed text to the specified command (e.g., 'wc -w')
-- `-q,  --quiet`: Suppress the banner and settings
+- `-q, --quiet`: Suppress the banner and settings
+- `--stdout`: Print transcriptions to stdout only. Suppresses banner, clipboard, file output, and progress indicators. Intended for shell pipelines.
+- `--jsonl`: Emit one JSON object per utterance: `{version, ts, model, duration, text}`. Implies `--stdout`. Not compatible with `--diarize`. In real-time mode with the API backend, lines may arrive out of speaking order — sort by `ts` or use `--oneshot` if strict order matters.
+
+**Diarization Options (gpt-4o-transcribe-diarize only):**
+- `--diarize`: Enable speaker diarization
+- `--register-speakers`: Interactively register known speakers (file mode only)
+- `--list-speakers`: List saved speaker samples
+- `--delete-speaker <name>`: Delete a saved speaker sample
+- `--speaker-dir <path>`: Custom directory for speaker samples (default: ~/.whisper-stream/speakers)
+
+**Other Options:**
 - `-V, --version`: Show the version number
 - `-h, --help`: Display the help message
 
 ## Examples
 
-Here are some usage examples with a brief comment on each of them:
+```bash
+# Default: continuous recording, copy to clipboard
+whisper-stream
 
-`> whisper-stream`
+# Specify input language (ISO-639-1)
+whisper-stream -l ja
 
-This will start the script with the default settings, recording audio continuously and transcribing it into text using the default volume threshold and silence length. If the OpenAI API token is not provided as an argument, the script will automatically use the value of the `OPENAI_API_KEY` environment variable if it is set.
+# Translate to English (whisper-1 only)
+whisper-stream -m whisper-1 -tr
 
-`> whisper-stream -l ja`
+# One-shot recording with tighter thresholds, saved to a directory
+whisper-stream -v -35d -s 2 -o -p ~/Desktop
 
-This will start the script with the input language specified as Japanese; see the [Wikipedia](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) page for ISO-639-1 language codes.
+# Transcribe an existing file
+whisper-stream -f ~/Desktop/interview.mp3 -l en
 
-`> whisper-stream -tr`
+# Meeting transcription with speaker diarization
+whisper-stream -f meeting.mp3 -m gpt-4o-transcribe-diarize --diarize
 
-It transcribes the spoken audio in whatever language and presents the text translated into English. Currently, the target language for translation is limited to English.
+# Pipe-native: stream transcriptions into any shell tool
+whisper-stream --stdout | your-tool
 
-`> whisper-stream -v 2% -s 2 -o -d 60 -t your_openai_api_token`
+# Structured JSONL output, one object per utterance
+whisper-stream --jsonl | jq -r .text
+```
 
-This example sets the minimum volume threshold to 2%, the minimum silence length to 2 seconds, enables one-shot mode, sets the recording duration to 60 seconds, and specifies the OpenAI API token.
+## Local backend (whisper.cpp)
 
-`> whisper-stream -f ~/Desktop/interview.mp3 -p ~/Desktop/transcripts -l en`
+In addition to the OpenAI API, `whisper-stream` can drive a local
+[`whisper.cpp`](https://github.com/ggml-org/whisper.cpp) binary. This makes
+continuous dictation free, offline, and private — useful when you want to run
+speech-to-text all day without API cost or when you need to work in
+network-isolated environments.
 
-This will transcribe the audio file located at `~/Desktop/interview.mp3`. The input language is specified as English. The output directory is set to `~Desktop/transcripts` to create a transcription text file.
+### Setup
 
-`> whisper-stream -p2 'wc -w'`
+```bash
+# Install whisper.cpp (provides the `whisper-cli` binary)
+brew install whisper-cpp     # macOS
+# or build from source: https://github.com/ggml-org/whisper.cpp
 
-This will start the script with the default settings for recording audio and transcribing it. After transcription, the transcribed text will be piped to the `wc -w` command, which counts the number of words in the text. The result, indicating the total word count, will be printed below the original transcribed output.
+# Download a ggml model file
+mkdir -p ~/.whisper-stream/models
+curl -L -o ~/.whisper-stream/models/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+```
 
-`> whisper-stream -v segment -p ~/Desktop`
+See the [whisper.cpp model list](https://huggingface.co/ggerganov/whisper.cpp/tree/main) for other sizes and languages.
 
-The `-g` option allows you to specify the mode for timestamp granularities. The available modes are segment or word, and specifying either will display detailed transcript data in JSON format. When used in conjunction with the `-p` option to specify a directory, the results will be saved as a JSON file. For more information, see the [`timestamp_granularities[]`](https://platform.openai.com/docs/api-reference/audio/createTranscription#audio-createtranscription-timestamp_granularities) section in OpenAI Whisper API reference.
+### Usage
 
-## Restrictions
+```bash
+# Uses the default model path (~/.whisper-stream/models/ggml-base.en.bin)
+whisper-stream --backend local
 
-Restrictions such as the languages that can be converted by this program, the types of audio files that can be input, and the size of data that can be converted at one time depend on what the Whisper API specifies. Please refer to [Whisper API FAQ](https://help.openai.com/en/articles/7031512-whisper-api-faq).
+# Point at a specific model
+whisper-stream --backend local --model-path ~/models/your-model.bin
+
+# Or via the environment variable
+WHISPER_STREAM_MODEL=~/models/your-model.bin whisper-stream -b local
+
+# Combines with pipe-native modes
+whisper-stream -b local --jsonl | jq -r '.text'
+```
+
+### Feature matrix (local vs API)
+
+| Feature                       | `api` | `local` |
+|-------------------------------|:-----:|:-------:|
+| Basic transcription           |   ✓   |    ✓    |
+| `--language`, `--prompt`      |   ✓   |    ✓    |
+| `--translate` (to English)    |   ✓   |    ✓    |
+| `--stdout`, `--jsonl`         |   ✓   |    ✓    |
+| `--diarize` / speaker registration |   ✓   |    –    |
+| `-g`/`--granularities`        | whisper-1 |    –    |
+
+### Real-time mode notes
+
+- Per-utterance latency depends on the model size. `ggml-tiny.en` is roughly half a second on Apple Silicon; larger models scale up.
+- The local backend serializes utterances to avoid GPU contention between concurrent `whisper-cli` processes.
+- On `whisper-cli` errors the affected utterance is skipped with a warning on stderr.
+
+## Model selection (API backend)
+
+- `gpt-4o-mini-transcribe` (default) — everyday transcription, fastest and cheapest
+- `gpt-4o-transcribe` — highest quality
+- `whisper-1` — needed for `-g` (timestamps) and `-tr` (translation)
+- `gpt-4o-transcribe-diarize` — needed for `--diarize` (multi-speaker)
+
+API limits: 25 MB per file; formats `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`. See the [OpenAI Speech to Text API](https://platform.openai.com/docs/guides/speech-to-text) for details.
 
 ## Author
 
