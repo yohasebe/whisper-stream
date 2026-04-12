@@ -2,7 +2,7 @@
 
 ![whisper-stream](https://github.com/yohasebe/whisper-stream/assets/18207/7b419ba0-a621-40ac-82c6-9c498e038e0d)
 
-**whisper-stream** is a single bash script for **real-time speech-to-text**. It records audio, detects silence between speech segments, and transcribes each segment using either the [OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text) or a local [whisper.cpp](https://github.com/ggml-org/whisper.cpp) binary.
+**whisper-stream** is a single bash script for **real-time speech-to-text**. It records audio, detects silence between speech segments, and transcribes each segment using either the [OpenAI speech-to-text API](https://platform.openai.com/docs/guides/speech-to-text) or a local [whisper.cpp](https://github.com/ggml-org/whisper.cpp) binary.
 
 The script works as a **pipe-native CLI primitive**: with `--stdout` or `--jsonl`, transcriptions flow to stdout with no side effects, so you can compose them with `jq`, shell loops, tmux panes, or any command-line AI coding agent. Without those flags, transcriptions are copied to the system clipboard and optionally saved as files.
 
@@ -11,7 +11,7 @@ Use cases range from one-off dictation to always-on local transcription for voic
 ## Features
 
 - **Pipe-native output**: `--stdout` for plain text and `--jsonl` for one JSON object per utterance, both suitable for composition with shell tools and AI agents
-- **Two backends**: OpenAI Whisper API for quality and language coverage, or local `whisper.cpp` for free, offline, private continuous dictation
+- **Two backends**: OpenAI's speech-to-text API for quality and language coverage, or local `whisper.cpp` for free, offline, private continuous dictation
 - **Multiple output modes**: plain text, JSON Lines, clipboard copy, or saved files — pick the right one for your workflow
 - **Multiple API models**: `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (default), `gpt-4o-transcribe-diarize`
 - **Speaker diarization** with optional known-speaker registration (API backend, `gpt-4o-transcribe-diarize` only)

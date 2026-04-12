@@ -2,7 +2,7 @@
 
 ![whisper-stream](https://github.com/yohasebe/whisper-stream/assets/18207/7b419ba0-a621-40ac-82c6-9c498e038e0d)
 
-**whisper-stream**は**リアルタイム音声認識**のための1ファイル完結のbashスクリプトです。音声を録音し、発話間の無音を検出して、各発話を[OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text)またはローカルの[whisper.cpp](https://github.com/ggml-org/whisper.cpp)バイナリで書き起こします。
+**whisper-stream**は**リアルタイム音声認識**のための1ファイル完結のbashスクリプトです。音声を録音し、発話間の無音を検出して、各発話を[OpenAIの音声認識API](https://platform.openai.com/docs/guides/speech-to-text)またはローカルの[whisper.cpp](https://github.com/ggml-org/whisper.cpp)バイナリで書き起こします。
 
 このスクリプトは**パイプネイティブなCLIプリミティブ**として動作します。`--stdout`や`--jsonl`オプションを使うと書き起こし結果が副作用なしでstdoutに流れるため、`jq`、シェルループ、tmuxペイン、コマンドラインのAIコーディングエージェントなどと自由に合成できます。これらのオプションを付けない場合は、書き起こしがシステムクリップボードにコピーされ、任意でファイルとしても保存されます。
 
@@ -11,7 +11,7 @@
 ## 特徴
 
 - **パイプネイティブ出力**: `--stdout`でプレーンテキスト、`--jsonl`で発話1件ごとに1つのJSONオブジェクト。どちらもシェルツールやAIエージェントとの合成に適した形
-- **2つのバックエンド**: 品質と多言語対応のOpenAI Whisper API、または**無料・オフライン・プライベート**な常時起動ディクテーションのためのローカル`whisper.cpp`
+- **2つのバックエンド**: 品質と多言語対応のOpenAI音声認識API、または**無料・オフライン・プライベート**な常時起動ディクテーションのためのローカル`whisper.cpp`
 - **複数の出力モード**: プレーンテキスト、JSON Lines、クリップボードコピー、ファイル保存 — ワークフローに合わせて選択
 - **複数のAPIモデル**: `whisper-1`、`gpt-4o-transcribe`、`gpt-4o-mini-transcribe`(デフォルト)、`gpt-4o-transcribe-diarize`
 - **話者ダイアライゼーション**と既知話者登録(APIバックエンドの`gpt-4o-transcribe-diarize`のみ)

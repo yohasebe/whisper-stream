@@ -1006,7 +1006,7 @@ function run_local_whisper_cpp() {
   return $jq_rc
 }
 
-# Convert the audio to text using the OpenAI Whisper API or local whisper.cpp.
+# Convert the audio to text using the OpenAI speech-to-text API or local whisper.cpp.
 function convert_audio_to_text() {
   local output_file=$1
 
