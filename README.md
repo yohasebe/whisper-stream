@@ -13,7 +13,7 @@ Use cases range from one-off dictation to always-on local transcription for voic
 - **Pipe-native output**: `--stdout` for plain text and `--jsonl` for one JSON object per utterance, both suitable for composition with shell tools and AI agents
 - **Two backends**: OpenAI's speech-to-text API for quality and language coverage, or local `whisper.cpp` for free, offline, private continuous dictation
 - **Multiple output modes**: plain text, JSON Lines, clipboard copy, or saved files — pick the right one for your workflow
-- **Multiple API models**: `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (default), `gpt-4o-transcribe-diarize`
+- **Multiple API models**: `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (default), `gpt-4o-transcribe-diarize`
 - **Speaker diarization** with optional known-speaker registration (API backend, `gpt-4o-transcribe-diarize` only)
 - **Real-time or file mode** with silence-based utterance segmentation
 
@@ -63,19 +63,19 @@ The available options are:
 - `-f, --file <value>`: Set the audio file to be transcribed
 
 **Backend Options:**
-- `-b, --backend <value>`: Transcription backend: `api` (OpenAI, default) or `local` (whisper.cpp, runs on your machine). See [Local backend](#local-backend-whispercpp) below.
+- `-b, --backend <value>`: Transcription backend: `api` (OpenAI or compatible, default) or `local` (whisper.cpp, runs on your machine). See [Local backend](#local-backend-whispercpp) below.
 - `--model-path <file>`: Path to a ggml model file for the local backend. Falls back to `$WHISPER_STREAM_MODEL` and then `~/.whisper-stream/models/ggml-base.en.bin`.
+- `--api-url <url>`: Override the API endpoint. Useful for self-hosted OpenAI-compatible servers such as whisper.cpp's `whisper-server`. When set, the token is optional.
 
 **API Options (backend=api):**
-- `-t, --token <value>`: Set the OpenAI API token
-- `-m, --model <value>`: Set the model. Any name is passed through to the API; unknown names only produce a warning so you can opt into dated snapshots such as `gpt-4o-mini-transcribe-2025-12-15`. Known values: `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (default, OpenAI-recommended), `gpt-4o-transcribe-diarize`.
+- `-t, --token <value>`: Set the API token (only required for the OpenAI endpoint)
+- `-m, --model <value>`: Set the model. Any name is passed through to the API; unknown names only produce a warning so you can opt into dated snapshots such as `gpt-4o-mini-transcribe-2025-12-15`. Known values: `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (default), `gpt-4o-transcribe-diarize`.
 - `-r, --prompt <value>`: Set the prompt (works on both backends)
 - `-l, --language <value>`: Set the input language in ISO-639-1 format
-- `-tr, --translate`: Translate the transcribed text to English
+- `-tr, --translate`: Translate the transcribed text to English (local backend only)
 
 **Output Options:**
 - `-p, --path <value>`: Set the output directory path to create the transcription file
-- `-g, --granularities <value>`: Set the timestamp granularities (segment or word, whisper-1 only)
 - `-p2, --pipe-to <cmd>`: Pipe the transcribed text to the specified command (e.g., 'wc -w')
 - `-q, --quiet`: Suppress the banner and settings
 - `--stdout`: Print transcriptions to stdout only. Suppresses banner, clipboard, file output, and progress indicators. Intended for shell pipelines.
@@ -101,8 +101,8 @@ whisper-stream
 # Specify input language (ISO-639-1)
 whisper-stream -l ja
 
-# Translate to English (whisper-1 only)
-whisper-stream -m whisper-1 -tr
+# Translate to English (requires the local backend)
+whisper-stream --backend local --translate
 
 # One-shot recording with tighter thresholds, saved to a directory
 whisper-stream -v -35d -s 2 -o -p ~/Desktop
@@ -161,14 +161,13 @@ whisper-stream -b local --jsonl | jq -r '.text'
 
 ### Feature matrix (local vs API)
 
-| Feature                       | `api` | `local` |
-|-------------------------------|:-----:|:-------:|
-| Basic transcription           |   ✓   |    ✓    |
-| `--language`, `--prompt`      |   ✓   |    ✓    |
-| `--translate` (to English)    |   ✓   |    ✓    |
-| `--stdout`, `--jsonl`         |   ✓   |    ✓    |
+| Feature                            | `api` | `local` |
+|------------------------------------|:-----:|:-------:|
+| Basic transcription                |   ✓   |    ✓    |
+| `--language`, `--prompt`           |   ✓   |    ✓    |
+| `--translate` (to English)         |   –   |    ✓    |
+| `--stdout`, `--jsonl`              |   ✓   |    ✓    |
 | `--diarize` / speaker registration |   ✓   |    –    |
-| `-g`/`--granularities`        | whisper-1 |    –    |
 
 ### Real-time mode notes
 
@@ -176,12 +175,34 @@ whisper-stream -b local --jsonl | jq -r '.text'
 - The local backend serializes utterances to avoid GPU contention between concurrent `whisper-cli` processes.
 - On `whisper-cli` errors the affected utterance is skipped with a warning on stderr.
 
+### Self-hosted whisper.cpp server (`--api-url`)
+
+If you run whisper.cpp's `whisper-server` (which exposes an OpenAI-compatible
+HTTP endpoint), you can point whisper-stream at it without using the local
+backend. This keeps the model resident in memory between utterances and
+removes the per-call startup cost of `whisper-cli`:
+
+```bash
+# Run whisper-server in another terminal:
+whisper-server --model ~/.whisper-stream/models/ggml-base.en.bin \
+  --host 127.0.0.1 --port 2022 \
+  --inference-path /v1/audio/transcriptions --convert
+
+# Then in whisper-stream:
+whisper-stream --api-url http://127.0.0.1:2022/v1/audio/transcriptions
+```
+
+No API key is required when `--api-url` is set.
+
+> **Security note:** `--api-url` directs requests to whatever URL you specify, so audio and any token you provide are sent there. Only point it at endpoints you trust, and avoid combining a real OpenAI API key with a third-party URL.
+
 ## Model selection (API backend)
 
 - `gpt-4o-mini-transcribe` (default) — everyday transcription, fastest and cheapest
 - `gpt-4o-transcribe` — highest quality
-- `whisper-1` — needed for `-g` (timestamps) and `-tr` (translation)
 - `gpt-4o-transcribe-diarize` — needed for `--diarize` (multi-speaker)
+
+For translation to English, use `--backend local --translate` (whisper.cpp does this natively).
 
 API limits: 25 MB per file; formats `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`. See the [OpenAI Speech to Text API](https://platform.openai.com/docs/guides/speech-to-text) for details.
 

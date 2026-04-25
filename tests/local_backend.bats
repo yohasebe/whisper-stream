@@ -61,7 +61,6 @@ setup() {
   MODEL="gpt-4o-mini-transcribe"
   PROMPT=""
   LANGUAGE=""
-  GRANULARITIES="none"
   DIARIZE=false
   REGISTER_SPEAKERS=false
   TRANSLATE=""
@@ -101,13 +100,6 @@ setup() {
   run validate_config
   [ "$status" -ne 0 ]
   [[ "$output" == *"--register-speakers"* ]]
-}
-
-@test "validate_config rejects local + -g granularities" {
-  GRANULARITIES="segment"
-  run validate_config
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"granularities"* ]]
 }
 
 @test "validate_config errors when model path is missing" {

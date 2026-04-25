@@ -8,7 +8,7 @@ setup() {
   BACKEND="api"
   MODEL="gpt-4o-mini-transcribe"
   MODEL_PATH=""
-  GRANULARITIES="none"
+  API_URL=""
   DIARIZE=false
   REGISTER_SPEAKERS=false
   TRANSLATE=""
@@ -16,6 +16,8 @@ setup() {
   CHUNKING_STRATEGY=""
   JSONL_MODE=false
 }
+
+# --- model whitelist ---------------------------------------------------------
 
 @test "accepts gpt-4o-mini-transcribe silently" {
   MODEL="gpt-4o-mini-transcribe"
@@ -31,13 +33,6 @@ setup() {
   [[ "$output" != *"Warning"* ]]
 }
 
-@test "accepts whisper-1 silently" {
-  MODEL="whisper-1"
-  run validate_config
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"Warning"* ]]
-}
-
 @test "accepts gpt-4o-transcribe-diarize silently" {
   MODEL="gpt-4o-transcribe-diarize"
   run validate_config
@@ -45,7 +40,7 @@ setup() {
   [[ "$output" != *"Warning"* ]]
 }
 
-@test "accepts snapshot name without warning (gpt-4o-mini-transcribe-2025-12-15)" {
+@test "accepts dated snapshot without warning" {
   MODEL="gpt-4o-mini-transcribe-2025-12-15"
   run validate_config
   [ "$status" -eq 0 ]
@@ -59,19 +54,15 @@ setup() {
   [[ "$output" == *"Warning"* ]]
 }
 
-@test "rejects granularities on gpt-4o-mini-transcribe" {
-  MODEL="gpt-4o-mini-transcribe"
-  GRANULARITIES="segment"
+@test "rejects whisper-1 with a clear migration message" {
+  MODEL="whisper-1"
   run validate_config
   [ "$status" -ne 0 ]
+  [[ "$output" == *"whisper-1"* ]]
+  [[ "$output" == *"retired"* ]] || [[ "$output" == *"no longer"* ]]
 }
 
-@test "accepts granularities on whisper-1" {
-  MODEL="whisper-1"
-  GRANULARITIES="segment"
-  run validate_config
-  [ "$status" -eq 0 ]
-}
+# --- diarization -------------------------------------------------------------
 
 @test "rejects --diarize without diarize-capable model" {
   MODEL="gpt-4o-mini-transcribe"
@@ -101,53 +92,40 @@ setup() {
   [ "$CHUNKING_STRATEGY" = "auto" ]
 }
 
-# --- --translate (API backend) must be whisper-1 ---------------------------
+# --- --translate (local backend only since v3.0) ----------------------------
 
-@test "accepts --translate with whisper-1 on api backend" {
-  MODEL="whisper-1"
-  TRANSLATE=true
-  run validate_config
-  [ "$status" -eq 0 ]
-}
-
-@test "rejects --translate with gpt-4o-mini-transcribe on api backend" {
+@test "rejects --translate on api backend regardless of model" {
+  BACKEND="api"
   MODEL="gpt-4o-mini-transcribe"
   TRANSLATE=true
   run validate_config
   [ "$status" -ne 0 ]
   [[ "$output" == *"--translate"* ]]
-  [[ "$output" == *"whisper-1"* ]]
+  [[ "$output" == *"local"* ]]
 }
 
-@test "rejects --translate with gpt-4o-transcribe on api backend" {
+@test "rejects --translate on api backend with gpt-4o-transcribe" {
+  BACKEND="api"
   MODEL="gpt-4o-transcribe"
   TRANSLATE=true
   run validate_config
   [ "$status" -ne 0 ]
 }
 
-@test "rejects --translate with gpt-4o-transcribe-diarize on api backend" {
-  MODEL="gpt-4o-transcribe-diarize"
-  TRANSLATE=true
-  DIARIZE=false
-  run validate_config
-  [ "$status" -ne 0 ]
-}
+# --- --api-url notes --------------------------------------------------------
 
-@test "warns when --language is combined with --translate" {
-  MODEL="whisper-1"
-  TRANSLATE=true
-  LANGUAGE="ja"
+@test "warns when --api-url is set with local backend" {
+  BACKEND="local"
+  # Provide a fake model so we get past the existence check.
+  FAKE_MODEL="$BATS_TEST_TMPDIR/fake.bin"
+  : > "$FAKE_MODEL"
+  MODEL_PATH="$FAKE_MODEL"
+  API_URL="http://localhost:2022/v1/audio/transcriptions"
+  # whisper-cli must exist for validate_config to return 0; skip if absent.
+  if ! command -v whisper-cli >/dev/null 2>&1; then
+    skip "whisper-cli not installed"
+  fi
   run validate_config
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ignored with --translate"* ]]
-}
-
-@test "does not warn when --translate is used without --language" {
-  MODEL="whisper-1"
-  TRANSLATE=true
-  LANGUAGE=""
-  run validate_config
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"ignored with --translate"* ]]
+  [[ "$output" == *"--api-url is ignored"* ]]
 }

@@ -12,7 +12,6 @@ setup() {
   MODEL="gpt-4o-mini-transcribe"
   PROMPT=""
   LANGUAGE=""
-  GRANULARITIES="none"
   DIARIZE=false
   TRANSLATE=""
   AUDIO_FILE="fake.mp3"

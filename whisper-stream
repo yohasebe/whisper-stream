@@ -1,30 +1,31 @@
 #!/bin/bash
 
 # Default configuration and versioning
-VERSION="2.0.0"
+VERSION="3.0.0"
 
 # Setting the default values for the script parameters
 MIN_VOLUME=1%                  # Minimum volume threshold
 SILENCE_LENGTH=1.5             # Minimum silence duration in seconds
 ONESHOT=false                  # Flag to determine if the script should run once or continuously
 DURATION=0                     # Duration of the recording in seconds (0 means continuous)
-MODEL="gpt-4o-mini-transcribe" # Model for the OpenAI API (changed from whisper-1 in v2.0.0)
-TOKEN=""                       # OpenAI API token
+MIN_AUDIO_DURATION=0.3         # Skip utterances shorter than this many seconds
+MODEL="gpt-4o-mini-transcribe" # Model name for the API backend (slug auto-tracks the latest snapshot)
+TOKEN=""                       # OpenAI API token (optional when --api-url points to a non-OpenAI endpoint)
 OUTPUT_DIR=""                  # Directory to save the transcriptions
 PROMPT=""                      # Prompt for the API call
 LANGUAGE=""                    # Language code for transcription
-TRANSLATE=""                   # Flag to indicate translation to English
+TRANSLATE=""                   # Flag to translate to English (local backend only since v3.0)
 AUDIO_FILE=""                  # Specific audio file for transcription
 PIPE_TO_CMD=""                 # Command to pipe the transcribed text to
 QUIET_MODE=false               # Flag to determine if the banner and settings should be suppressed
 STDOUT_MODE=false              # Pipe-native mode: transcript-only output, no clipboard/file side effects
 JSONL_MODE=false               # Emit one JSON object per utterance (implies STDOUT_MODE)
 JSONL_SCHEMA_VERSION=1         # Schema version for JSONL output; bump on breaking changes
-GRANULARITIES="none"           # Timestamp granularities for transcription: segment or word
 
 # Backend selection
-BACKEND="api"                  # "api" (OpenAI) or "local" (whisper.cpp)
+BACKEND="api"                  # "api" (OpenAI or compatible) or "local" (whisper.cpp)
 MODEL_PATH=""                  # Path to ggml model file for local backend
+API_URL=""                     # Override the API endpoint (e.g., http://127.0.0.1:2022/v1/audio/transcriptions for whisper-server)
 
 # Diarization settings (for gpt-4o-transcribe-diarize)
 DIARIZE=false                  # Enable speaker diarization
@@ -51,28 +52,30 @@ function display_help() {
   echo "  -f, --file <value>          Set the audio file to be transcribed"
   echo ""
   echo "Backend Options:"
-  echo "  -b, --backend <value>       Transcription backend: 'api' (OpenAI, default)"
-  echo "                              or 'local' (whisper.cpp, requires whisper-cli)"
+  echo "  -b, --backend <value>       Transcription backend: 'api' (OpenAI or"
+  echo "                              compatible HTTP endpoint, default) or 'local'"
+  echo "                              (whisper.cpp, requires whisper-cli)"
   echo "      --model-path <file>     Path to a ggml model file for the local backend."
   echo "                              Falls back to \$WHISPER_STREAM_MODEL, then"
   echo "                              ~/.whisper-stream/models/ggml-base.en.bin"
+  echo "      --api-url <url>         Override the API endpoint. Useful to point at"
+  echo "                              a self-hosted OpenAI-compatible server such as"
+  echo "                              whisper.cpp's whisper-server. When set, the"
+  echo "                              token is optional."
   echo ""
   echo "API Options (backend=api):"
-  echo "  -t, --token <value>         Set the OpenAI API token"
-  echo "  -m, --model <value>         Set the model. Any model name is passed through"
-  echo "                              to the API; unknown names produce a warning."
-  echo "                              Known values: whisper-1, gpt-4o-transcribe,"
-  echo "                              gpt-4o-mini-transcribe (default; OpenAI-recommended),"
-  echo "                              gpt-4o-transcribe-diarize, or dated snapshots"
-  echo "                              such as gpt-4o-mini-transcribe-2025-12-15"
+  echo "  -t, --token <value>         Set the API token (only required for the OpenAI endpoint)"
+  echo "  -m, --model <value>         Set the model. Any model name is passed through;"
+  echo "                              unknown names produce a warning. Known values:"
+  echo "                              gpt-4o-transcribe, gpt-4o-mini-transcribe"
+  echo "                              (default), gpt-4o-transcribe-diarize, or dated"
+  echo "                              snapshots like gpt-4o-mini-transcribe-2025-12-15."
   echo "  -r, --prompt <value>        Set the prompt (works on both backends)"
   echo "  -l, --language <value>      Set the language in ISO-639-1 format"
-  echo "  -tr, --translate            Translate the transcribed text to English"
+  echo "  -tr, --translate            Translate to English (local backend only)"
   echo ""
   echo "Output Options:"
   echo "  -p, --path <value>          Set the output directory path to create the transcription file"
-  echo "  -g, --granularities <value> Set the timestamp granularities (segment or word)"
-  echo "                              (whisper-1 only)"
   echo "  -p2, --pipe-to <cmd>        Pipe the transcribed text to the specified command (e.g., 'wc -m')"
   echo "  -q, --quiet                 Suppress the banner and settings"
   echo "      --stdout                Pipe-native mode: print transcriptions to stdout only."
@@ -495,6 +498,9 @@ function validate_config() {
   if [ "$BACKEND" = "api" ] && [ -n "$MODEL_PATH" ]; then
     echo "Warning: --model-path is ignored when --backend api is used." >&2
   fi
+  if [ "$BACKEND" = "local" ] && [ -n "$API_URL" ]; then
+    echo "Warning: --api-url is ignored when --backend local is used." >&2
+  fi
 
   # Local backend feature compatibility.
   if [ "$BACKEND" = "local" ]; then
@@ -504,10 +510,6 @@ function validate_config() {
     fi
     if [ "$REGISTER_SPEAKERS" = true ]; then
       echo "Error: --register-speakers is not supported by the local backend" >&2
-      exit 1
-    fi
-    if [ "$GRANULARITIES" != "none" ]; then
-      echo "Error: timestamp granularities (-g) are not supported by the local backend" >&2
       exit 1
     fi
     # Resolve model path: CLI flag > env var > default location
@@ -531,33 +533,26 @@ function validate_config() {
 
   # API backend validation below.
   case "$MODEL" in
-    whisper-1|gpt-4o-transcribe*|gpt-4o-mini-transcribe*)
+    gpt-4o-transcribe*|gpt-4o-mini-transcribe*)
+      ;;
+    whisper-1*)
+      echo "Error: whisper-1 is no longer supported (retired 2026-06-01 by OpenAI)." >&2
+      echo "       Use gpt-4o-mini-transcribe (default) or gpt-4o-transcribe instead." >&2
+      echo "       For translation to English, use --backend local with --translate." >&2
+      exit 1
       ;;
     *)
       echo "Warning: Unrecognized model '$MODEL'. Passing through to API." >&2
       ;;
   esac
 
-  if [ "$GRANULARITIES" != "none" ] && [ "$MODEL" != "whisper-1" ]; then
-    echo "Error: timestamp_granularities is only supported with whisper-1 model"
+  # Translation moved to local backend only in v3.0. The OpenAI
+  # /audio/translations endpoint required whisper-1 which is now retired.
+  # whisper.cpp's whisper-cli still supports translation natively.
+  if [ -n "$TRANSLATE" ]; then
+    echo "Error: --translate is only supported by the local backend (whisper.cpp) since v3.0." >&2
+    echo "       Use: --backend local --translate" >&2
     exit 1
-  fi
-
-  # The OpenAI /audio/translations endpoint only supports whisper-1. With
-  # any gpt-4o-*-transcribe model the server returns an opaque "Invalid URL"
-  # error at runtime. Catch this at startup with a clear message so users
-  # know to add -m whisper-1.
-  if [ -n "$TRANSLATE" ] && [ "$MODEL" != "whisper-1" ]; then
-    echo "Error: --translate (-tr) is only supported by the whisper-1 model on the API backend." >&2
-    echo "       Use: -m whisper-1 -tr" >&2
-    exit 1
-  fi
-
-  # The /audio/translations endpoint rejects any language value other than
-  # "en" (it only accepts the target language). Whisper auto-detects the
-  # source language, so -l is meaningless here — warn and ignore.
-  if [ -n "$TRANSLATE" ] && [ -n "$LANGUAGE" ]; then
-    echo "Warning: --language (-l) is ignored with --translate; whisper auto-detects the source language." >&2
   fi
 
   if [ "$DIARIZE" = true ] && [[ "$MODEL" != gpt-4o-transcribe-diarize* ]]; then
@@ -660,15 +655,6 @@ while [[ $# -gt 0 ]]; do
       shift
       shift
       ;;
-    -g|--granularities)
-      if [[ ! $2 || $2 == -* ]]; then
-        echo "Error: Missing value for $1"
-        exit 1
-      fi
-      GRANULARITIES="$2"
-      shift
-      shift
-      ;;
     -r|--prompt)
       if [[ ! $2 || $2 == -* ]]; then
         echo "Error: Missing value for $1"
@@ -734,6 +720,15 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       MODEL_PATH="$2"
+      shift
+      shift
+      ;;
+    --api-url)
+      if [[ ! $2 || $2 == -* ]]; then
+        echo "Error: Missing value for $1"
+        exit 1
+      fi
+      API_URL="$2"
       shift
       shift
       ;;
@@ -813,14 +808,16 @@ fi
 
 validate_config
 
-# Fetch OpenAI API token from environment if not provided as an argument
+# Fetch OpenAI API token from environment if not provided as an argument.
+# Token is required for the API backend with the default OpenAI endpoint;
+# it is optional when --api-url points at a self-hosted server (e.g.
+# whisper-server) that does not check authorization.
 if [ -z "$TOKEN" ]; then
   TOKEN="${OPENAI_API_KEY:-}"
 fi
 
-# If no token is provided as an argument or environment variable, exit the script
-if [ -z "$TOKEN" ]; then
-  echo "No OpenAI API key provided. Please provide it as an argument or environment variable."
+if [ "$BACKEND" = "api" ] && [ -z "$TOKEN" ] && [ -z "$API_URL" ]; then
+  echo "No OpenAI API key provided. Set OPENAI_API_KEY, pass -t, or use --api-url to point at a token-less endpoint." >&2
   exit 1
 fi
 
@@ -878,6 +875,9 @@ function display_settings() {
     echo "  Model: $(basename "$MODEL_PATH")"
   else
     echo "  Model: $MODEL"
+  fi
+  if [ "$BACKEND" = "api" ] && [ -n "$API_URL" ]; then
+    echo "  API URL: $API_URL"
   fi
   echo "  Volume threshold: $MIN_VOLUME"
   echo "  Silence length: $SILENCE_LENGTH seconds"
@@ -1010,6 +1010,26 @@ function run_local_whisper_cpp() {
 function convert_audio_to_text() {
   local output_file=$1
 
+  # Skip utterances that are too short. SoX silence detection can be fooled
+  # by brief noise, producing tiny clips that waste API budget and add empty
+  # rows to the accumulated transcript. awk is used because bash arithmetic
+  # cannot compare floats.
+  #
+  # Only applies in real-time mode. In file mode (-f) the user explicitly
+  # picked the input, so always honour their choice — silently dropping a
+  # short clip there would be a confusing regression.
+  #
+  # `|| true` keeps the assignment from poisoning $? when soxi rejects the
+  # input (e.g. invalid audio). "Unknown duration" is treated as "do not skip".
+  if [ -z "$AUDIO_FILE" ]; then
+    local duration
+    duration=$(soxi -D "$output_file" 2>/dev/null) || true
+    if [ -n "$duration" ] && awk -v d="$duration" -v m="$MIN_AUDIO_DURATION" 'BEGIN { exit !(d+0 > 0 && d+0 < m+0) }'; then
+      rm -f "$output_file"
+      return 0
+    fi
+  fi
+
   # Local backend path: delegate to whisper.cpp and short-circuit the API
   # flow. JSONL, --pipe-to, temp_transcriptions.txt accumulation, and
   # output-file cleanup still run exactly as with the API backend.
@@ -1054,62 +1074,51 @@ function convert_audio_to_text() {
     return 0
   fi
 
-  local base_url
-  if [ -n "$TRANSLATE" ]; then
-    base_url="https://api.openai.com/v1/audio/translations"
-  else
-    base_url="https://api.openai.com/v1/audio/transcriptions"
-  fi
+  # Endpoint: default to OpenAI's transcriptions URL, or use the user-supplied
+  # --api-url for self-hosted OpenAI-compatible servers (e.g. whisper-server).
+  local base_url="${API_URL:-https://api.openai.com/v1/audio/transcriptions}"
 
-  # Determine response format based on model and options.
-  # Default is plain json; verbose_json is only required when whisper-1 needs
-  # to return segment/word timestamps.
+  # Determine response format based on options. Diarization needs the special
+  # diarized_json format; everything else uses plain json.
   local response_format="json"
   if [ "$DIARIZE" = true ] && [[ "$MODEL" == gpt-4o-transcribe-diarize* ]]; then
     response_format="diarized_json"
-  elif [ "$MODEL" = "whisper-1" ] && [ "$GRANULARITIES" != "none" ]; then
-    response_format="verbose_json"
   fi
 
-  # Write the API credentials to a private temp config file.
-  # This keeps the bearer token out of the process argument list (visible via ps).
-  # Using a portable template (mktemp -t has incompatible semantics on GNU vs BSD).
-  local auth_file
-  auth_file=$(mktemp "${TMPDIR:-/tmp}/whisper-stream.XXXXXX") || {
-    echo "Error: failed to create temporary auth file" >&2
-    return 1
-  }
-  chmod 600 "$auth_file"
-  # Safety net: remove the auth file even if the function is interrupted by a
-  # signal (SIGINT/SIGTERM) before the explicit cleanup at the end.
-  trap 'rm -f "$auth_file"' EXIT
-  printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" > "$auth_file"
+  # Write the API credentials to a private temp config file when a token is
+  # available. This keeps the bearer token out of argv (visible via ps).
+  # mktemp uses a portable template (mktemp -t has incompatible semantics on
+  # GNU vs BSD).
+  local auth_file=""
+  if [ -n "$TOKEN" ]; then
+    auth_file=$(mktemp "${TMPDIR:-/tmp}/whisper-stream.XXXXXX") || {
+      echo "Error: failed to create temporary auth file" >&2
+      return 1
+    }
+    chmod 600 "$auth_file"
+    # Safety net: remove the auth file even if the function is interrupted by
+    # a signal (SIGINT/SIGTERM) before the explicit cleanup at the end.
+    trap 'rm -f "$auth_file"' EXIT
+    printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" > "$auth_file"
+  fi
 
   # Build curl arguments as an array so that user-controlled fields
   # (PROMPT, LANGUAGE, file paths) are never re-interpreted by the shell.
   local curl_args=(
-    --config "$auth_file"
     -s --request POST
     --url "$base_url"
     --form "file=@$output_file"
     --form "model=$MODEL"
     --form "response_format=$response_format"
   )
-
-  # timestamp_granularities is only supported by whisper-1
-  if [ "$GRANULARITIES" != "none" ] && [ "$MODEL" = "whisper-1" ]; then
-    curl_args+=(--form "timestamp_granularities[]=${GRANULARITIES}")
-  fi
+  [ -n "$auth_file" ] && curl_args=(--config "$auth_file" "${curl_args[@]}")
 
   # Prompt is supported everywhere except on gpt-4o-transcribe-diarize*
   if [ -n "$PROMPT" ] && [[ "$MODEL" != gpt-4o-transcribe-diarize* ]]; then
     curl_args+=(--form "prompt=$PROMPT")
   fi
 
-  # The /audio/translations endpoint only accepts language="en" (target).
-  # Whisper auto-detects the source language, so skip the form field entirely
-  # when TRANSLATE is set. If the user explicitly supplied -l, warn them.
-  if [ -n "$LANGUAGE" ] && [ -z "$TRANSLATE" ]; then
+  if [ -n "$LANGUAGE" ]; then
     curl_args+=(--form "language=$LANGUAGE")
   fi
 
@@ -1150,10 +1159,22 @@ function convert_audio_to_text() {
     fi
   done
 
-  rm -f "$auth_file"
+  [ -n "$auth_file" ] && rm -f "$auth_file"
   trap - EXIT
   if [ "$STDOUT_MODE" = false ] && [ -t 2 ]; then
     printf "\r\e[K" >&2
+  fi
+
+  # If the API responded with a structured error, log to stderr and skip the
+  # utterance entirely instead of treating the error message as a transcription.
+  local api_error
+  api_error=$(echo "$response" | jq -r '.error.message // empty' 2>/dev/null)
+  if [ -n "$api_error" ]; then
+    echo "Warning: API error: $api_error" >&2
+    if [ -z "$AUDIO_FILE" ]; then
+      rm -f "$output_file"
+    fi
+    return 0
   fi
 
   # Process response based on format
@@ -1170,41 +1191,31 @@ function convert_audio_to_text() {
         .segments[] |
         "[" + (.start | floor | tostring) + "s] " + .speaker + ": " + .text
       else
-        .text // .error.message // "Error processing response"
+        .text // "Error processing response"
       end
     ' 2>/dev/null)
 
     if [ -z "$display_text" ]; then
       # Fallback to plain text if segments not available
-      display_text=$(echo "$response" | jq -r '.text // .error.message // "Error"' 2>/dev/null)
+      display_text=$(echo "$response" | jq -r '.text // "Error"' 2>/dev/null)
     fi
 
-  elif [ "$GRANULARITIES" != "none" ] || [ "$response_format" = "verbose_json" ]; then
-    # JSON response with granularities or verbose
-    transcription="$response"
-    display_text=$(echo "$response" | jq -r '.text // .error.message // "Error"' 2>/dev/null)
-
   else
-    # Plain text or simple JSON response
-    transcription=$(echo "$response" | jq -r '.text // .error.message // "Error"' 2>/dev/null)
+    # Plain JSON response
+    transcription=$(echo "$response" | jq -r '.text // "Error"' 2>/dev/null)
     display_text="$transcription"
   fi
 
   # Primary transcription output.
   # In JSONL mode, emit one JSON object per utterance using jq so that the
-  # text is properly escaped. Duration is pulled from the response when the
-  # verbose_json format is in use (whisper-1 + -g); otherwise it's null.
+  # text is properly escaped. Duration is null because no API model in the
+  # supported set returns audio duration.
   if [ "$JSONL_MODE" = true ]; then
-    local jsonl_duration="null"
-    if [ "$response_format" = "verbose_json" ]; then
-      jsonl_duration=$(echo "$response" | jq -r '.duration // "null"' 2>/dev/null)
-      [ -z "$jsonl_duration" ] && jsonl_duration="null"
-    fi
     jq -nc \
       --argjson version "$JSONL_SCHEMA_VERSION" \
       --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --arg model "$MODEL" \
-      --argjson duration "$jsonl_duration" \
+      --argjson duration null \
       --arg text "$display_text" \
       '{version:$version, ts:$ts, model:$model, duration:$duration, text:$text}'
   else
@@ -1271,9 +1282,8 @@ function handle_exit() {
   # If output directory is specified, create a file with the accumulated text in the specified directory
   if [ -n "$OUTPUT_DIR" ]; then
     timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
-    # Determine file extension based on content type
-    if [ "$DIARIZE" = true ] || [ "$GRANULARITIES" != "none" ]; then
-      # JSON output for diarization or granularities
+    if [ "$DIARIZE" = true ]; then
+      # JSON output for diarization (raw API response per utterance)
       echo "$accumulated_text" > "$OUTPUT_DIR/transcription_$timestamp.json"
     else
       # Plain text output

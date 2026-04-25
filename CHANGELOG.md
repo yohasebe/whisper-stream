@@ -10,6 +10,71 @@ a major bump.
 This file is updated when substantive changes happen; small refactors,
 comment tweaks, and cosmetic fixes are not recorded here.
 
+## [3.0.0] — 2026-04-12
+
+This release prunes features that depend on the `whisper-1` model — which
+OpenAI is retiring on 2026-06-01 along with the original `gpt-4o-transcribe`
+and `gpt-4o-mini-transcribe` snapshots — and adds support for self-hosted
+OpenAI-compatible endpoints (most notably whisper.cpp's `whisper-server`).
+The model slugs that this script uses now auto-track newer snapshots, so
+no version pinning is required from end users.
+
+### ⚠️ Breaking
+
+- **`whisper-1` is no longer accepted** as a model name. The OpenAI API
+  retires it on 2026-06-01. Selecting it now produces a clear error at
+  startup pointing at `gpt-4o-mini-transcribe` (default) or
+  `gpt-4o-transcribe`. For translation, the message points at the local
+  backend.
+- **`-g` / `--granularities` removed.** Timestamp granularities only
+  worked with `whisper-1`. There is no equivalent on the surviving
+  models.
+- **`--translate` (`-tr`) is now local-only.** The OpenAI
+  `/audio/translations` endpoint is whisper-1-specific and goes away in
+  June 2026. `whisper-cli` (the local backend) still supports
+  translation natively, so `--backend local --translate` continues to
+  work. Using `--translate` with the API backend now exits with a clear
+  migration message.
+
+### Added
+
+- **`--api-url` option** to override the API endpoint. Lets you point
+  whisper-stream at a self-hosted OpenAI-compatible server such as
+  whisper.cpp's `whisper-server`. When `--api-url` is set, the API token
+  is optional, so you can run end-to-end without an OpenAI key. Note
+  that audio and any token you supply are sent to whatever URL you
+  specify, so only use this with endpoints you trust.
+- **API error responses are now skipped, not displayed.** When the API
+  returns a structured `{"error": ...}` payload (rate limit, bad key,
+  invalid parameter, etc.), the affected utterance is dropped with a
+  warning on stderr instead of being treated as a transcription. The
+  `[api error message]` no longer ends up on the clipboard or in JSONL.
+- **Short-utterance skip** (`MIN_AUDIO_DURATION`, default 0.3s).
+  Recordings shorter than the threshold — typically false positives
+  from SoX silence detection — are dropped before reaching the
+  backend, which saves API calls on always-on setups.
+- **`display_settings` now reports the backend and API URL** when set,
+  and shows the local model basename instead of the unused API model
+  slug under `--backend local`.
+
+### Removed
+
+- The `/audio/translations` URL branch (no longer reachable).
+- The `verbose_json` response format and all `timestamp_granularities`
+  form-field handling.
+- All `whisper-1` model special-casing.
+- The deprecated warning that fired when `--language` was combined with
+  `--translate`; the new validation makes the warning unnecessary.
+
+### Notes
+
+- Default model is still the `gpt-4o-mini-transcribe` slug. OpenAI has
+  historically rolled slugs forward to newer snapshots (e.g. the
+  `gpt-realtime-mini` slug was rolled forward to the 2025-12-15 snapshot
+  on 2026-01-13), so this should keep working without script changes.
+  If you want a pinned snapshot, pass it explicitly:
+  `-m gpt-4o-mini-transcribe-2025-12-15`.
+
 ## [2.0.0] — 2026-04-12
 
 Version 2.0.0 bundles both the model/diarization work that preceded the

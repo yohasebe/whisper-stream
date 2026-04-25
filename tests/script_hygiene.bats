@@ -68,6 +68,26 @@ SCRIPT="${BATS_TEST_DIRNAME}/../whisper-stream"
   [[ "$output" == *"dBFS"* ]] || [[ "$output" == *"-30d"* ]]
 }
 
+@test "version is 3.0.0" {
+  run "$SCRIPT" --version
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"3.0.0"* ]]
+}
+
+@test "help text mentions --api-url" {
+  run "$SCRIPT" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--api-url"* ]]
+}
+
+@test "help text no longer mentions -g/--granularities" {
+  run "$SCRIPT" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"--granularities"* ]]
+  # Match the option-table form "-g, " specifically; allow other -g* tokens.
+  [[ "$output" != *"-g, "* ]]
+}
+
 @test "main loop serializes convert_audio_to_text when backend is local" {
   # The local branch must NOT use background execution (&) because multiple
   # whisper-cli processes would contend for GPU resources. A future refactor

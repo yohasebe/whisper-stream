@@ -13,7 +13,7 @@
 - **パイプネイティブ出力**: `--stdout`でプレーンテキスト、`--jsonl`で発話1件ごとに1つのJSONオブジェクト。どちらもシェルツールやAIエージェントとの合成に適した形
 - **2つのバックエンド**: 品質と多言語対応のOpenAI音声認識API、または**無料・オフライン・プライベート**な常時起動ディクテーションのためのローカル`whisper.cpp`
 - **複数の出力モード**: プレーンテキスト、JSON Lines、クリップボードコピー、ファイル保存 — ワークフローに合わせて選択
-- **複数のAPIモデル**: `whisper-1`、`gpt-4o-transcribe`、`gpt-4o-mini-transcribe`(デフォルト)、`gpt-4o-transcribe-diarize`
+- **複数のAPIモデル**: `gpt-4o-transcribe`、`gpt-4o-mini-transcribe`(デフォルト)、`gpt-4o-transcribe-diarize`
 - **話者ダイアライゼーション**と既知話者登録(APIバックエンドの`gpt-4o-transcribe-diarize`のみ)
 - **リアルタイム/ファイルモード**で無音ベースの発話区切り
 
@@ -63,19 +63,19 @@ install -m 755 whisper-stream /usr/local/bin/
 - `-f, --file <value>`: 書き起こし対象の音声ファイルを指定
 
 **バックエンドオプション:**
-- `-b, --backend <value>`: 書き起こしバックエンドを指定。`api`(OpenAI、デフォルト)または`local`(whisper.cpp、ローカル実行)。詳細は下記[ローカルバックエンド](#ローカルバックエンドwhispercpp)を参照。
+- `-b, --backend <value>`: 書き起こしバックエンドを指定。`api`(OpenAIまたは互換、デフォルト)または`local`(whisper.cpp、ローカル実行)。詳細は下記[ローカルバックエンド](#ローカルバックエンドwhispercpp)を参照。
 - `--model-path <file>`: ローカルバックエンド用のggmlモデルファイルパス。未指定時は`$WHISPER_STREAM_MODEL`、それも未設定なら`~/.whisper-stream/models/ggml-base.en.bin`にフォールバック。
+- `--api-url <url>`: APIエンドポイントを上書き。whisper.cppの`whisper-server`などOpenAI互換のセルフホストサーバを指す用途に便利。設定時はトークンは任意。
 
 **APIオプション(backend=api):**
-- `-t, --token <value>`: OpenAI APIトークンを指定
-- `-m, --model <value>`: モデルを指定。任意のモデル名はAPIにそのまま渡されます。未知のモデル名は警告のみ出るため、`gpt-4o-mini-transcribe-2025-12-15`のような日付付きスナップショットも指定可能です。既知の値: `whisper-1`、`gpt-4o-transcribe`、`gpt-4o-mini-transcribe`(デフォルト、OpenAI推奨)、`gpt-4o-transcribe-diarize`。
+- `-t, --token <value>`: APIトークンを指定(OpenAIエンドポイント使用時のみ必須)
+- `-m, --model <value>`: モデルを指定。任意のモデル名はAPIにそのまま渡されます。未知のモデル名は警告のみ出るため、`gpt-4o-mini-transcribe-2025-12-15`のような日付付きスナップショットも指定可能です。既知の値: `gpt-4o-transcribe`、`gpt-4o-mini-transcribe`(デフォルト)、`gpt-4o-transcribe-diarize`。
 - `-r, --prompt <value>`: プロンプトを指定(両バックエンドで有効)
 - `-l, --language <value>`: 入力言語をISO-639-1形式で指定
-- `-tr, --translate`: 書き起こしテキストを英語に翻訳
+- `-tr, --translate`: 書き起こしテキストを英語に翻訳(ローカルバックエンドのみ)
 
 **出力オプション:**
 - `-p, --path <value>`: 書き起こしファイルを作成する出力ディレクトリを指定
-- `-g, --granularities <value>`: タイムスタンプ粒度を指定(segmentまたはword、whisper-1専用)
 - `-p2, --pipe-to <cmd>`: 書き起こしテキストを指定コマンドにパイプ(例: `'wc -w'`)
 - `-q, --quiet`: バナーと設定表示を抑制
 - `--stdout`: 書き起こしをstdoutにのみ出力。バナー・クリップボード・ファイル出力・進捗表示を全て抑制します。シェルパイプライン向け。
@@ -101,8 +101,8 @@ whisper-stream
 # 入力言語を指定(ISO-639-1)
 whisper-stream -l ja
 
-# 英語への翻訳(whisper-1のみ対応)
-whisper-stream -m whisper-1 -tr
+# 英語への翻訳(ローカルバックエンドが必要)
+whisper-stream --backend local --translate
 
 # ワンショット録音、厳しめの閾値、ディレクトリ保存
 whisper-stream -v -35d -s 2 -o -p ~/Desktop
@@ -161,10 +161,9 @@ whisper-stream -b local --jsonl | jq -r '.text'
 |-----------------------------------|:-----:|:-------:|
 | 基本の書き起こし                  |   ✓   |    ✓    |
 | `--language`、`--prompt`          |   ✓   |    ✓    |
-| `--translate`(英語への翻訳)     |   ✓   |    ✓    |
+| `--translate`(英語への翻訳)      |   –   |    ✓    |
 | `--stdout`、`--jsonl`             |   ✓   |    ✓    |
 | `--diarize` / 話者登録            |   ✓   |    –    |
-| `-g` / `--granularities`          | whisper-1 |    –    |
 
 ### リアルタイムモードでの注意点
 
@@ -172,12 +171,31 @@ whisper-stream -b local --jsonl | jq -r '.text'
 - ローカルバックエンドは複数の`whisper-cli`プロセスによるGPU競合を避けるため、発話を逐次処理します。
 - `whisper-cli`エラー時、その発話はスキップされ、stderrに警告が出ます。
 
+### セルフホストwhisper.cppサーバー(`--api-url`)
+
+whisper.cppの`whisper-server`(OpenAI互換のHTTPエンドポイントを公開)を実行している場合、ローカルバックエンドを使わずに`--api-url`でそこに向けることができます。モデルがメモリに常駐したままになり、`whisper-cli`の発話ごとの起動コストが消えます:
+
+```bash
+# 別のターミナルで whisper-server を起動:
+whisper-server --model ~/.whisper-stream/models/ggml-base.en.bin \
+  --host 127.0.0.1 --port 2022 \
+  --inference-path /v1/audio/transcriptions --convert
+
+# whisper-stream 側:
+whisper-stream --api-url http://127.0.0.1:2022/v1/audio/transcriptions
+```
+
+`--api-url`設定時はAPIキー不要です。
+
+> **セキュリティ注意:** `--api-url`は指定されたURLにリクエストを送信します。音声データと(指定されている場合は)トークンもそのURLに渡るため、信頼できるエンドポイントのみに使用してください。本物のOpenAIトークンを第三者のURLと組み合わせるのは避けてください。
+
 ## モデル選択(APIバックエンド)
 
 - `gpt-4o-mini-transcribe`(デフォルト) — 汎用的な書き起こし。最速・最安
 - `gpt-4o-transcribe` — 最高品質
-- `whisper-1` — `-g`(タイムスタンプ)と `-tr`(翻訳)に必要
 - `gpt-4o-transcribe-diarize` — `--diarize`(複数話者)に必要
+
+英語への翻訳には`--backend local --translate`を使ってください(whisper.cppがネイティブ対応)。
 
 APIの制約: 1ファイル25MB、対応形式は`mp3`、`mp4`、`mpeg`、`mpga`、`m4a`、`wav`、`webm`。詳細は[OpenAI Speech to Text API](https://platform.openai.com/docs/guides/speech-to-text)を参照。
 
