@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default configuration and versioning
-VERSION="3.0.0"
+VERSION="3.1.0"
 
 # Setting the default values for the script parameters
 MIN_VOLUME=1%                  # Minimum volume threshold
@@ -26,6 +26,8 @@ JSONL_SCHEMA_VERSION=1         # Schema version for JSONL output; bump on breaki
 BACKEND="api"                  # "api" (OpenAI or compatible) or "local" (whisper.cpp)
 MODEL_PATH=""                  # Path to ggml model file for local backend
 API_URL=""                     # Override the API endpoint (e.g., http://127.0.0.1:2022/v1/audio/transcriptions for whisper-server)
+VAD=false                      # Use whisper.cpp's built-in VAD to filter non-speech (local backend only)
+VAD_MODEL_PATH=""              # Path to the VAD model (silero) file
 
 # Diarization settings (for gpt-4o-transcribe-diarize)
 DIARIZE=false                  # Enable speaker diarization
@@ -62,6 +64,13 @@ function display_help() {
   echo "                              a self-hosted OpenAI-compatible server such as"
   echo "                              whisper.cpp's whisper-server. When set, the"
   echo "                              token is optional."
+  echo "      --vad                   (local backend only) Enable whisper.cpp's"
+  echo "                              built-in VAD to skip non-speech inside each"
+  echo "                              chunk. Improves transcription quality and"
+  echo "                              reduces hallucinations such as 'Thank you'."
+  echo "      --vad-model-path <file> Path to a ggml VAD model (e.g. silero)."
+  echo "                              Falls back to \$WHISPER_STREAM_VAD_MODEL,"
+  echo "                              then ~/.whisper-stream/models/ggml-silero-v5.1.2.bin"
   echo ""
   echo "API Options (backend=api):"
   echo "  -t, --token <value>         Set the API token (only required for the OpenAI endpoint)"
@@ -501,6 +510,10 @@ function validate_config() {
   if [ "$BACKEND" = "local" ] && [ -n "$API_URL" ]; then
     echo "Warning: --api-url is ignored when --backend local is used." >&2
   fi
+  if [ "$BACKEND" = "api" ] && [ "$VAD" = true ]; then
+    echo "Error: --vad is only supported by the local backend (whisper.cpp)." >&2
+    exit 1
+  fi
 
   # Local backend feature compatibility.
   if [ "$BACKEND" = "local" ]; then
@@ -527,6 +540,19 @@ function validate_config() {
       echo "Hint: install whisper.cpp with 'brew install whisper-cpp' (macOS)" >&2
       echo "      or build from https://github.com/ggml-org/whisper.cpp" >&2
       exit 1
+    fi
+    # Resolve VAD model path when --vad is enabled.
+    if [ "$VAD" = true ]; then
+      if [ -z "$VAD_MODEL_PATH" ]; then
+        VAD_MODEL_PATH="${WHISPER_STREAM_VAD_MODEL:-$HOME/.whisper-stream/models/ggml-silero-v5.1.2.bin}"
+      fi
+      if [ ! -f "$VAD_MODEL_PATH" ]; then
+        echo "Error: VAD model not found at: $VAD_MODEL_PATH" >&2
+        echo "Hint: download a silero VAD model from" >&2
+        echo "      https://huggingface.co/ggml-org/whisper-vad/" >&2
+        echo "      and place it there, or set \$WHISPER_STREAM_VAD_MODEL / --vad-model-path." >&2
+        exit 1
+      fi
     fi
     return 0
   fi
@@ -729,6 +755,19 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       API_URL="$2"
+      shift
+      shift
+      ;;
+    --vad)
+      VAD=true
+      shift
+      ;;
+    --vad-model-path)
+      if [[ ! $2 || $2 == -* ]]; then
+        echo "Error: Missing value for $1"
+        exit 1
+      fi
+      VAD_MODEL_PATH="$2"
       shift
       shift
       ;;
@@ -990,6 +1029,9 @@ function run_local_whisper_cpp() {
   [ -n "$LANGUAGE" ] && wcli_args+=(-l "$LANGUAGE")
   [ -n "$PROMPT" ]   && wcli_args+=(--prompt "$PROMPT")
   [ -n "$TRANSLATE" ] && wcli_args+=(-tr)
+  if [ "$VAD" = true ]; then
+    wcli_args+=(--vad --vad-model "$VAD_MODEL_PATH")
+  fi
 
   # Suppress the GGML backend init logs (stderr) and any non-JSON stdout.
   whisper-cli "${wcli_args[@]}" >/dev/null 2>&1

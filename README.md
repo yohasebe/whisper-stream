@@ -66,6 +66,8 @@ The available options are:
 - `-b, --backend <value>`: Transcription backend: `api` (OpenAI or compatible, default) or `local` (whisper.cpp, runs on your machine). See [Local backend](#local-backend-whispercpp) below.
 - `--model-path <file>`: Path to a ggml model file for the local backend. Falls back to `$WHISPER_STREAM_MODEL` and then `~/.whisper-stream/models/ggml-base.en.bin`.
 - `--api-url <url>`: Override the API endpoint. Useful for self-hosted OpenAI-compatible servers such as whisper.cpp's `whisper-server`. When set, the token is optional.
+- `--vad`: (local backend only) Use whisper.cpp's built-in Voice Activity Detection to filter non-speech regions inside each chunk. Reduces hallucinations and improves accuracy. Requires a VAD model.
+- `--vad-model-path <file>`: Path to a ggml VAD model. Falls back to `$WHISPER_STREAM_VAD_MODEL` and then `~/.whisper-stream/models/ggml-silero-v5.1.2.bin`.
 
 **API Options (backend=api):**
 - `-t, --token <value>`: Set the API token (only required for the OpenAI endpoint)
@@ -139,6 +141,10 @@ brew install whisper-cpp     # macOS
 mkdir -p ~/.whisper-stream/models
 curl -L -o ~/.whisper-stream/models/ggml-base.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+
+# Optional: VAD model for --vad
+curl -L -o ~/.whisper-stream/models/ggml-silero-v5.1.2.bin \
+  https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 ```
 
 See the [whisper.cpp model list](https://huggingface.co/ggerganov/whisper.cpp/tree/main) for other sizes and languages.
@@ -166,6 +172,7 @@ whisper-stream -b local --jsonl | jq -r '.text'
 | Basic transcription                |   ✓   |    ✓    |
 | `--language`, `--prompt`           |   ✓   |    ✓    |
 | `--translate` (to English)         |   –   |    ✓    |
+| `--vad` (built-in VAD)             |   –   |    ✓    |
 | `--stdout`, `--jsonl`              |   ✓   |    ✓    |
 | `--diarize` / speaker registration |   ✓   |    –    |
 

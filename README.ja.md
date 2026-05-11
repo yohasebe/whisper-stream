@@ -66,6 +66,8 @@ install -m 755 whisper-stream /usr/local/bin/
 - `-b, --backend <value>`: 書き起こしバックエンドを指定。`api`(OpenAIまたは互換、デフォルト)または`local`(whisper.cpp、ローカル実行)。詳細は下記[ローカルバックエンド](#ローカルバックエンドwhispercpp)を参照。
 - `--model-path <file>`: ローカルバックエンド用のggmlモデルファイルパス。未指定時は`$WHISPER_STREAM_MODEL`、それも未設定なら`~/.whisper-stream/models/ggml-base.en.bin`にフォールバック。
 - `--api-url <url>`: APIエンドポイントを上書き。whisper.cppの`whisper-server`などOpenAI互換のセルフホストサーバを指す用途に便利。設定時はトークンは任意。
+- `--vad`:(ローカルバックエンド限定)whisper.cppの組み込みVADを有効化し、各チャンク内の非発話区間をスキップ。文字起こし精度の向上と"Thank you for watching"のような幻覚の抑制に効きます。VADモデルが必要。
+- `--vad-model-path <file>`: ggml形式のVADモデルパス。未指定時は`$WHISPER_STREAM_VAD_MODEL`、それも未設定なら`~/.whisper-stream/models/ggml-silero-v5.1.2.bin`。
 
 **APIオプション(backend=api):**
 - `-t, --token <value>`: APIトークンを指定(OpenAIエンドポイント使用時のみ必須)
@@ -135,6 +137,10 @@ brew install whisper-cpp     # macOS
 mkdir -p ~/.whisper-stream/models
 curl -L -o ~/.whisper-stream/models/ggml-base.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+
+# オプション: --vad 用のVADモデル
+curl -L -o ~/.whisper-stream/models/ggml-silero-v5.1.2.bin \
+  https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 ```
 
 他のサイズや言語対応モデルは[whisper.cppのモデル一覧](https://huggingface.co/ggerganov/whisper.cpp/tree/main)を参照してください。
@@ -162,6 +168,7 @@ whisper-stream -b local --jsonl | jq -r '.text'
 | 基本の書き起こし                  |   ✓   |    ✓    |
 | `--language`、`--prompt`          |   ✓   |    ✓    |
 | `--translate`(英語への翻訳)      |   –   |    ✓    |
+| `--vad`(組み込みVAD)             |   –   |    ✓    |
 | `--stdout`、`--jsonl`             |   ✓   |    ✓    |
 | `--diarize` / 話者登録            |   ✓   |    –    |
 

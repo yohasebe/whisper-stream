@@ -72,6 +72,10 @@ setup() {
   JSONL_MODE=false
   JSONL_SCHEMA_VERSION=1
   TOKEN="sk-unused-in-local-mode"
+  VAD=false
+  VAD_MODEL_PATH=""
+  MIN_AUDIO_DURATION=0.3
+  API_URL=""
 }
 
 # --- validate_config for local backend --------------------------------------
@@ -244,4 +248,56 @@ STUB
   run validate_config
   [ "$status" -eq 0 ]
   [[ "$output" == *"--model-path is ignored"* ]]
+}
+
+# --- VAD (whisper.cpp built-in) --------------------------------------------
+
+@test "validate_config rejects --vad on api backend" {
+  BACKEND="api"
+  VAD=true
+  run validate_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--vad"* ]]
+  [[ "$output" == *"local"* ]]
+}
+
+@test "validate_config rejects --vad when the VAD model is missing" {
+  VAD=true
+  VAD_MODEL_PATH="$BATS_TEST_TMPDIR/no-such-vad.bin"
+  run validate_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"VAD model not found"* ]]
+}
+
+@test "validate_config accepts --vad when both models exist" {
+  VAD=true
+  VAD_MODEL_PATH="$BATS_TEST_TMPDIR/fake-vad.bin"
+  : > "$VAD_MODEL_PATH"
+  run validate_config
+  [ "$status" -eq 0 ]
+}
+
+@test "validate_config resolves VAD model from \$WHISPER_STREAM_VAD_MODEL" {
+  VAD=true
+  WHISPER_STREAM_VAD_MODEL="$BATS_TEST_TMPDIR/env-vad.bin"
+  : > "$WHISPER_STREAM_VAD_MODEL"
+  run validate_config
+  [ "$status" -eq 0 ]
+}
+
+@test "local backend passes --vad and --vad-model to whisper-cli" {
+  VAD=true
+  VAD_MODEL_PATH="$BATS_TEST_TMPDIR/fake-vad.bin"
+  : > "$VAD_MODEL_PATH"
+  convert_audio_to_text fake.mp3 >/dev/null
+  grep -Fxq -- "--vad" "$WCLI_CAPTURE"
+  grep -Fxq -- "--vad-model" "$WCLI_CAPTURE"
+  grep -Fxq -- "$VAD_MODEL_PATH" "$WCLI_CAPTURE"
+}
+
+@test "local backend does NOT pass --vad when VAD is false" {
+  VAD=false
+  convert_audio_to_text fake.mp3 >/dev/null
+  run grep -Fxq -- "--vad" "$WCLI_CAPTURE"
+  [ "$status" -ne 0 ]
 }

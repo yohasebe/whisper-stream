@@ -10,6 +10,29 @@ a major bump.
 This file is updated when substantive changes happen; small refactors,
 comment tweaks, and cosmetic fixes are not recorded here.
 
+## [3.1.0] — 2026-05-11
+
+### Added
+
+- **`--vad` option** (local backend only). Enables whisper.cpp's built-in
+  Voice Activity Detection, which filters non-speech regions inside each
+  chunk before transcription. This improves accuracy and reduces common
+  hallucinations such as repeated "Thank you for watching" on silence.
+  Requires a ggml-formatted VAD model. Falls back to
+  `$WHISPER_STREAM_VAD_MODEL` and then
+  `~/.whisper-stream/models/ggml-silero-v5.1.2.bin`. A download URL is
+  printed when the file is missing.
+- **`--vad-model-path`** option to override the VAD model location.
+
+### Notes
+
+- `--vad` is **not** a replacement for the SoX silence detection in the
+  recording loop. It only refines what whisper.cpp does with each chunk
+  the recording loop produces. SoX false positives are unaffected — for
+  those, see the longer-term ffmpeg migration discussion in CLAUDE.md.
+- `--vad` is rejected on the API backend (`/v1/audio/transcriptions`
+  has no equivalent flag).
+
 ## [3.0.0] — 2026-04-12
 
 This release prunes features that depend on the `whisper-1` model — which
