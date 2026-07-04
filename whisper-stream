@@ -1006,6 +1006,27 @@ function spinner() {
   printf "\r\e[K"
 }
 
+# Record a single utterance into the given file, blocking until trailing
+# silence is detected (or DURATION expires). This function is the SEAM
+# between whisper-stream and the audio-capture tool: a future migration away
+# from SoX (ffmpeg, pw-record, a dedicated capture tool, ...) should only
+# need to replace the body of this function. See "SoX exit triggers" in
+# CLAUDE.md for when and how that migration would happen.
+#
+# Contract (pinned by tests/recording.bats):
+#   - blocks until the utterance is complete and the file is fully written
+#   - honours MIN_VOLUME (percent or dBFS), SILENCE_LENGTH, DURATION
+#   - writes the encoded audio to the path given as $1
+function record_utterance() {
+  local out_file=$1
+  local -a rec_args=(-q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw -)
+  if [ "$DURATION" -gt 0 ]; then
+    rec_args+=(trim 0 "$DURATION")
+  fi
+  rec_args+=(silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME")
+  rec "${rec_args[@]}" | sox -t raw -r 44100 -b 16 -e signed -c 1 - "$out_file"
+}
+
 # Run the local whisper.cpp binary against an audio file and echo the
 # transcription text. Used by convert_audio_to_text when BACKEND=local.
 function run_local_whisper_cpp() {
@@ -1446,16 +1467,8 @@ while true; do
   # Add a prompt at the beginning of the recording
   # echo -n $'\e[1;32m'▶ $'\e[0m'
 
-  # Record audio in raw format then convert to mp3
-  if [ "$DURATION" -gt 0 ]; then
-    rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw \
-      - trim 0 "$DURATION" silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
-      sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE"
-  else
-    rec -q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw \
-      - silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME" | \
-      sox -t raw -r 44100 -b 16 -e signed -c 1 - "$OUTPUT_FILE"
-  fi
+  # Record one utterance (blocks until silence or the duration limit)
+  record_utterance "$OUTPUT_FILE"
   
   # Check if the audio file is created successfully
   if [ -s "$OUTPUT_FILE" ]; then
