@@ -68,10 +68,10 @@ SCRIPT="${BATS_TEST_DIRNAME}/../whisper-stream"
   [[ "$output" == *"dBFS"* ]] || [[ "$output" == *"-30d"* ]]
 }
 
-@test "version is 3.1.0" {
+@test "version is 3.1.1" {
   run "$SCRIPT" --version
   [ "$status" -eq 0 ]
-  [[ "$output" == *"3.1.0"* ]]
+  [[ "$output" == *"3.1.1"* ]]
 }
 
 @test "help text mentions --api-url" {

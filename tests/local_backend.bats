@@ -250,6 +250,73 @@ STUB
   [[ "$output" == *"--model-path is ignored"* ]]
 }
 
+# --- whisper-cli resolution (PATH + Homebrew opt-path fallback) --------------
+#
+# The whisper-cpp formula ships a binary also named `whisper-stream`, which
+# collides with this project's binary and can leave the whisper-cpp keg
+# unlinked after `brew upgrade` — whisper-cli then vanishes from PATH even
+# though it is installed. resolve_whisper_cli() must survive that state by
+# probing the version-stable Homebrew opt paths.
+
+@test "resolve_whisper_cli prefers PATH when whisper-cli is available" {
+  # The stub install put whisper-cli on PATH.
+  run resolve_whisper_cli
+  [ "$status" -eq 0 ]
+  [ "$output" = "whisper-cli" ]
+}
+
+@test "resolve_whisper_cli falls back to opt path when not in PATH" {
+  local fallback_dir="$BATS_TEST_TMPDIR/fake-opt/whisper-cpp/bin"
+  mkdir -p "$fallback_dir"
+  cp "$BATS_TEST_TMPDIR/bin/whisper-cli" "$fallback_dir/whisper-cli"
+  WHISPER_CLI_FALLBACKS=("$fallback_dir/whisper-cli")
+
+  PATH="/usr/bin:/bin" run resolve_whisper_cli
+  [ "$status" -eq 0 ]
+  [ "$output" = "$fallback_dir/whisper-cli" ]
+}
+
+@test "resolve_whisper_cli fails when neither PATH nor fallbacks have it" {
+  WHISPER_CLI_FALLBACKS=("$BATS_TEST_TMPDIR/nowhere/whisper-cli")
+  PATH="/usr/bin:/bin" run resolve_whisper_cli
+  [ "$status" -ne 0 ]
+}
+
+@test "validate_config resolves whisper-cli via fallback (unlinked keg scenario)" {
+  local fallback_dir="$BATS_TEST_TMPDIR/fake-opt/whisper-cpp/bin"
+  mkdir -p "$fallback_dir"
+  cp "$BATS_TEST_TMPDIR/bin/whisper-cli" "$fallback_dir/whisper-cli"
+  WHISPER_CLI_FALLBACKS=("$fallback_dir/whisper-cli")
+
+  local saved_path="$PATH"
+  PATH="/usr/bin:/bin"
+  validate_config
+  PATH="$saved_path"
+  [ "$WHISPER_CLI" = "$fallback_dir/whisper-cli" ]
+}
+
+@test "validate_config still errors clearly when whisper-cli is truly absent" {
+  WHISPER_CLI_FALLBACKS=("$BATS_TEST_TMPDIR/nowhere/whisper-cli")
+  PATH="/usr/bin:/bin" run validate_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"whisper-cli"* ]]
+  [[ "$output" == *"not found"* ]]
+}
+
+@test "run_local_whisper_cpp invokes the resolved WHISPER_CLI path" {
+  local alt_dir="$BATS_TEST_TMPDIR/alt-bin"
+  mkdir -p "$alt_dir"
+  cp "$BATS_TEST_TMPDIR/bin/whisper-cli" "$alt_dir/whisper-cli-custom"
+  WHISPER_CLI="$alt_dir/whisper-cli-custom"
+  # Remove the PATH stub so a bare `whisper-cli` invocation cannot satisfy
+  # this test — only the resolved path can write the capture file.
+  rm "$BATS_TEST_TMPDIR/bin/whisper-cli"
+
+  : > "$WCLI_CAPTURE"
+  convert_audio_to_text fake.mp3 >/dev/null 2>&1 || true
+  [ -s "$WCLI_CAPTURE" ]
+}
+
 # --- VAD (whisper.cpp built-in) --------------------------------------------
 
 @test "validate_config rejects --vad on api backend" {

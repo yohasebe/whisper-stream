@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default configuration and versioning
-VERSION="3.1.0"
+VERSION="3.1.1"
 
 # Setting the default values for the script parameters
 MIN_VOLUME=1%                  # Minimum volume threshold
@@ -28,6 +28,14 @@ MODEL_PATH=""                  # Path to ggml model file for local backend
 API_URL=""                     # Override the API endpoint (e.g., http://127.0.0.1:2022/v1/audio/transcriptions for whisper-server)
 VAD=false                      # Use whisper.cpp's built-in VAD to filter non-speech (local backend only)
 VAD_MODEL_PATH=""              # Path to the VAD model (silero) file
+WHISPER_CLI="whisper-cli"      # Resolved whisper-cli command (set by validate_config)
+# Homebrew opt paths exist even when the whisper-cpp keg is UNLINKED, which
+# happens after `brew upgrade whisper-cpp` because that formula ships a
+# binary also named `whisper-stream` and the link conflicts with this tool.
+WHISPER_CLI_FALLBACKS=(
+  /opt/homebrew/opt/whisper-cpp/bin/whisper-cli
+  /usr/local/opt/whisper-cpp/bin/whisper-cli
+)
 
 # Diarization settings (for gpt-4o-transcribe-diarize)
 DIARIZE=false                  # Enable speaker diarization
@@ -487,6 +495,24 @@ function encode_speaker_reference() {
   fi
 }
 
+# Resolve the whisper-cli command: PATH first, then the Homebrew opt-path
+# fallbacks (see WHISPER_CLI_FALLBACKS above). Echoes the command to use;
+# returns non-zero when whisper-cli cannot be found anywhere.
+function resolve_whisper_cli() {
+  if command -v whisper-cli >/dev/null 2>&1; then
+    echo "whisper-cli"
+    return 0
+  fi
+  local candidate
+  for candidate in "${WHISPER_CLI_FALLBACKS[@]}"; do
+    if [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Validate configuration and warn on unrecognized models.
 # Uses glob patterns so that snapshot names (e.g. gpt-4o-mini-transcribe-2025-12-15)
 # pass through to the API without being blocked by a hard-coded whitelist.
@@ -535,8 +561,8 @@ function validate_config() {
       echo "      and place it there, or set \$WHISPER_STREAM_MODEL / --model-path." >&2
       exit 1
     fi
-    if ! command -v whisper-cli >/dev/null 2>&1; then
-      echo "Error: 'whisper-cli' binary not found in PATH." >&2
+    if ! WHISPER_CLI=$(resolve_whisper_cli); then
+      echo "Error: 'whisper-cli' binary not found in PATH or Homebrew opt paths." >&2
       echo "Hint: install whisper.cpp with 'brew install whisper-cpp' (macOS)" >&2
       echo "      or build from https://github.com/ggml-org/whisper.cpp" >&2
       exit 1
@@ -1055,7 +1081,7 @@ function run_local_whisper_cpp() {
   fi
 
   # Suppress the GGML backend init logs (stderr) and any non-JSON stdout.
-  whisper-cli "${wcli_args[@]}" >/dev/null 2>&1
+  "$WHISPER_CLI" "${wcli_args[@]}" >/dev/null 2>&1
   local rc=$?
   local json_file="${out_prefix}.json"
   if [ $rc -ne 0 ] || [ ! -f "$json_file" ]; then

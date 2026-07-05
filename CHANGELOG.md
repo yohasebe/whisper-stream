@@ -10,6 +10,27 @@ a major bump.
 This file is updated when substantive changes happen; small refactors,
 comment tweaks, and cosmetic fixes are not recorded here.
 
+## [3.1.1] — 2026-07-04
+
+### Fixed
+
+- **`--backend local` now survives an unlinked whisper-cpp keg.** The
+  `whisper-cpp` Homebrew formula ships a binary also named
+  `whisper-stream`, which conflicts with this tool's binary; a
+  `brew upgrade whisper-cpp` can therefore leave the whole keg unlinked
+  and `whisper-cli` missing from PATH. whisper-stream now falls back to
+  the version-stable Homebrew opt paths
+  (`/opt/homebrew/opt/whisper-cpp/bin`, `/usr/local/opt/whisper-cpp/bin`)
+  before giving up, so the local backend keeps working without the
+  manual relink dance.
+
+### Internal
+
+- The utterance-recording pipeline (`rec | sox` with silence detection)
+  is now isolated in a single `record_utterance()` function — the seam
+  for any future recorder migration (ffmpeg, pw-record, etc.). Its
+  contract is pinned by `tests/recording.bats`. No behavior change.
+
 ## [3.1.0] — 2026-05-11
 
 ### Added
