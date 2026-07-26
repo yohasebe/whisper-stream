@@ -211,7 +211,7 @@ No API key is required when `--api-url` is set.
 
 For translation to English, use `--backend local --translate` (whisper.cpp does this natively).
 
-API limits: 25 MB per file; formats `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`. See the [OpenAI Speech to Text API](https://platform.openai.com/docs/guides/speech-to-text) for details.
+API limits: 25 MB per file; formats `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`, `flac`, `ogg`, `opus` (case-insensitive; enforced for the API backend only). See the [OpenAI Speech to Text API](https://platform.openai.com/docs/guides/speech-to-text) for details.
 
 ## Author
 

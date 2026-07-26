@@ -68,10 +68,10 @@ SCRIPT="${BATS_TEST_DIRNAME}/../whisper-stream"
   [[ "$output" == *"dBFS"* ]] || [[ "$output" == *"-30d"* ]]
 }
 
-@test "version is 3.1.1" {
+@test "version is 3.1.2" {
   run "$SCRIPT" --version
   [ "$status" -eq 0 ]
-  [[ "$output" == *"3.1.1"* ]]
+  [[ "$output" == *"3.1.2"* ]]
 }
 
 @test "help text mentions --api-url" {
@@ -97,4 +97,23 @@ SCRIPT="${BATS_TEST_DIRNAME}/../whisper-stream"
   [[ "$output" == *'convert_audio_to_text "$OUTPUT_FILE"'* ]]
   # Inside the local branch the call must not be backgrounded.
   ! echo "$output" | grep -E 'convert_audio_to_text "\$OUTPUT_FILE" &'
+}
+
+# --- signal handling ---------------------------------------------------------
+
+@test "SIGTERM and SIGHUP are trapped so the session work dir is cleaned up" {
+  # EXIT cannot be used here: convert_audio_to_text clears it with `trap - EXIT`
+  # after removing its own temp files, which would silently disable a global
+  # EXIT handler. Catch the terminating signals explicitly instead.
+  run grep -nE '^trap handle_exit .*SIGTERM' "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run grep -nE '^trap handle_exit .*SIGHUP' "$SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "handle_exit propagates a caller-supplied exit status" {
+  grep -qE 'local exit_status=\$\{1:-0\}' "$SCRIPT"
+  # Every exit inside handle_exit must carry the status, never a bare `exit`.
+  run awk '/^function handle_exit/,/^}/' "$SCRIPT"
+  [[ "$output" != *$'\n  exit\n'* ]]
 }

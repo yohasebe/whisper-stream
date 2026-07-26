@@ -136,7 +136,9 @@ STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/curl"
 
   run convert_audio_to_text fake.mp3
-  [ "$status" -eq 0 ]
+  # A failed utterance now reports non-zero so file mode can propagate it;
+  # the real-time loop deliberately ignores the status and carries on.
+  [ "$status" -ne 0 ]
   # Output should NOT contain the error string as transcription text.
   [[ "$output" != *"transcription text"* ]] || true
   # Stderr (merged into $output by bats) should carry the warning.
@@ -192,4 +194,183 @@ STUB
   convert_audio_to_text fake.mp3 >/dev/null
   # The API call SHOULD have happened.
   [ -s "$CURL_CAPTURE" ]
+}
+
+# --- speaker references: file-based form fields (ARG_MAX regression) ---------
+#
+# A 10-second speaker sample is ~880 KB of WAV, i.e. ~1.2 MB base64. Passing
+# that inline via `--form "known_speaker_references[]=$encoded"` exceeds
+# macOS ARG_MAX (~1 MB) and the diarization feature dies with E2BIG. The
+# reference must go through curl's `--form 'field=<file'` file-read syntax.
+
+setup_diarize_speaker() {
+  DIARIZE=true
+  MODEL="gpt-4o-transcribe-diarize"
+  CHUNKING_STRATEGY="auto"
+  SPEAKER_DIR="$BATS_TEST_TMPDIR/speakers"
+  mkdir -p "$SPEAKER_DIR"
+  jq -n '{alice: {name: "Alice", file: "alice.wav", duration: 5, created: "2026-01-01T00:00:00Z"}}' \
+    > "$SPEAKER_DIR/speakers.json"
+  # ~1.2 MB of audio: base64-encoded (~1.6 MB) this would blow past macOS
+  # ARG_MAX (1 MB) if it were inlined into curl argv.
+  head -c 1200000 /dev/zero > "$SPEAKER_DIR/alice.wav"
+  KNOWN_SPEAKERS=("alice")
+}
+
+@test "speaker reference is passed as a file-based form field (not inline base64 in argv)" {
+  setup_diarize_speaker
+  # Use `run` — a direct call would abort the test shell under bats' errexit
+  # semantics when curl (stubbed or real) exits non-zero inside the function.
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  grep -F 'known_speaker_references[]=<' "$CURL_CAPTURE"
+  # No argv element may carry the base64 blob itself.
+  awk 'length($0) > 100000 { exit 1 }' "$CURL_CAPTURE"
+}
+
+@test "speaker reference temp file is removed after the call" {
+  setup_diarize_speaker
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  local ref_path
+  ref_path=$(grep -F 'known_speaker_references[]=<' "$CURL_CAPTURE" | sed 's/.*=<//')
+  [ -n "$ref_path" ]
+  [ ! -e "$ref_path" ]
+}
+
+@test "speaker reference temp file contains the base64 data URI" {
+  setup_diarize_speaker
+  # Stub curl that dumps the contents of any file-based reference fields.
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    known_speaker_references[]=\<*) cat "${arg#*=<}" >> "$REF_CAPTURE" ;;
+  esac
+done
+echo '{"text":"fake transcription"}'
+echo "200"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+  export REF_CAPTURE="$BATS_TEST_TMPDIR/ref_capture.txt"
+
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  grep -q '^data:audio/wav;base64,' "$REF_CAPTURE"
+}
+
+# --- HTTP status handling ----------------------------------------------------
+
+@test "non-2xx HTTP response is skipped with a warning" {
+  # FastAPI-style error body (common for self-hosted servers) + status line.
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"detail":"Not Found"}'
+printf '%s\n' '404'
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+
+  run convert_audio_to_text fake.mp3
+  # A failed utterance now reports non-zero so file mode can propagate it;
+  # the real-time loop deliberately ignores the status and carries on.
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"HTTP 404"* ]]
+  [[ "$output" == *"skipping utterance"* ]]
+}
+
+@test "empty API response (request failed after retries) is skipped with a warning" {
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+exit 7
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+
+  run convert_audio_to_text fake.mp3
+  # A failed utterance now reports non-zero so file mode can propagate it;
+  # the real-time loop deliberately ignores the status and carries on.
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"skipping utterance"* ]]
+}
+
+# --- HTTP status line parsing ------------------------------------------------
+
+@test "a multi-line body without a status line is not truncated" {
+  # Only a bare 3-digit final line is the -w status. A pretty-printed JSON
+  # body whose last line is "}" must survive intact.
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '{\n  "text": "multi line body"\n}\n'
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"multi line body"* ]]
+}
+
+@test "a 3-digit status line is still stripped from a multi-line body" {
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '{\n  "text": "multi line body"\n}\n200'
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  [ "$output" = "multi line body" ]
+}
+
+# --- failure signalling ------------------------------------------------------
+#
+# A skipped-because-failed utterance must return non-zero so that file mode
+# can turn it into a non-zero process exit. Deliberate skips (audio too
+# short) are NOT failures and keep returning 0.
+
+@test "an API error returns non-zero from convert_audio_to_text" {
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"message":"Rate limit exceeded"}}\n429'
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+}
+
+@test "the short-audio skip is not a failure (returns zero)" {
+  cat > "$BATS_TEST_TMPDIR/bin/soxi" <<'STUB'
+#!/usr/bin/env bash
+echo "0.1"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/soxi"
+  AUDIO_FILE=""
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+}
+
+@test "a non-2xx response includes the API's own error message when present" {
+  # The HTTP status check runs before the .error extraction, so it must not
+  # throw away the more informative message (e.g. rate limit vs. quota).
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"message":"You exceeded your current quota","type":"insufficient_quota"}}\n429'
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"429"* ]]
+  [[ "$output" == *"exceeded your current quota"* ]]
+}
+
+@test "a non-2xx response without a JSON error body still reports the status" {
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '<html>502 Bad Gateway</html>\n502'
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"502"* ]]
 }

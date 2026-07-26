@@ -113,3 +113,21 @@ STUB
   run grep -nE '\$\(mktemp[[:space:]]+-t' "${BATS_TEST_DIRNAME}/../whisper-stream"
   [ "$status" -ne 0 ]
 }
+
+# --- clipboard-tool fallback ---------------------------------------------------
+#
+# If the clipboard tool is missing (e.g. xclip not installed on Linux), the
+# accumulated transcription must be preserved in a file instead of being lost.
+
+@test "save_transcription_fallback writes text to OUTPUT_DIR" {
+  OUTPUT_DIR="$BATS_TEST_TMPDIR/fallback-out"
+  mkdir -p "$OUTPUT_DIR"
+  save_transcription_fallback "preserved text"
+  grep -q "preserved text" "$OUTPUT_DIR"/transcription_*.txt
+}
+
+@test "save_transcription_fallback uses CWD when OUTPUT_DIR is unset" {
+  OUTPUT_DIR=""
+  save_transcription_fallback "preserved in cwd"
+  grep -q "preserved in cwd" ./transcription_*.txt
+}

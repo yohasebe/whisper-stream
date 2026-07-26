@@ -129,3 +129,63 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"--api-url is ignored"* ]]
 }
+
+# --- external dependency checks ----------------------------------------------
+#
+# validate_config must verify the external commands the chosen mode actually
+# needs, and no more: jq always, curl for the api backend, rec/sox only for
+# real-time recording (file mode must keep working on machines with no mic).
+
+# Build a directory containing symlinks to only the named commands, so the
+# dependency checks can be exercised with a controlled PATH.
+make_dep_path() {
+  local dir="$BATS_TEST_TMPDIR/depbin"
+  mkdir -p "$dir"
+  local c
+  for c in "$@"; do
+    ln -sf "$(command -v "$c")" "$dir/$c"
+  done
+  echo "$dir"
+}
+
+@test "validate_config errors when jq is missing" {
+  local d
+  d=$(make_dep_path curl rec sox)
+  PATH="$d" run validate_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"jq"* ]]
+}
+
+@test "validate_config errors when curl is missing for the api backend" {
+  local d
+  d=$(make_dep_path jq rec sox)
+  PATH="$d" run validate_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"curl"* ]]
+}
+
+@test "validate_config errors when rec/sox are missing in real-time mode" {
+  local d
+  d=$(make_dep_path jq curl)
+  PATH="$d" run validate_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"rec"* ]] || [[ "$output" == *"sox"* ]]
+}
+
+@test "file mode (-f) does not require rec/sox" {
+  AUDIO_FILE="fake.mp3"
+  local d
+  d=$(make_dep_path jq curl)
+  PATH="$d" run validate_config
+  [ "$status" -eq 0 ]
+}
+
+# --- -p2 / --pipe-to combined with pipe-native output ------------------------
+
+@test "validate_config warns when --pipe-to is combined with pipe-native output" {
+  PIPE_TO_CMD="wc -c"
+  STDOUT_MODE=true
+  run validate_config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pipe-to"* ]]
+}

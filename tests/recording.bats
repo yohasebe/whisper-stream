@@ -109,3 +109,30 @@ setup() {
 @test "main loop records via record_utterance" {
   grep -q 'record_utterance "\$OUTPUT_FILE"' "$BATS_TEST_DIRNAME/../whisper-stream"
 }
+
+# --- rec failure propagation (busy-loop guard) --------------------------------
+#
+# record_utterance must surface rec's own exit status so the main loop can
+# distinguish "rec failed to start" (no mic, permission denied) from "rec ran
+# fine but nobody spoke". Without this, a failing rec produces an empty file
+# and the main loop spins at full speed forever.
+
+@test "record_utterance propagates rec's non-zero exit status" {
+  cat > "$BATS_TEST_TMPDIR/bin/rec" <<'STUB'
+#!/usr/bin/env bash
+exit 3
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/rec"
+
+  run record_utterance out.mp3
+  [ "$status" -eq 3 ]
+}
+
+@test "record_utterance returns zero when rec succeeds" {
+  run record_utterance out.mp3
+  [ "$status" -eq 0 ]
+}
+
+@test "main loop counts consecutive rec failures (busy-loop regression)" {
+  grep -q 'rec_failures' "$BATS_TEST_DIRNAME/../whisper-stream"
+}

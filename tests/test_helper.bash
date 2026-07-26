@@ -36,7 +36,10 @@ for arg in "$@"; do
   fi
   prev="$arg"
 done
+# Emulate `curl -w '\n%{http_code}'`: body, then the status code on the
+# last line — the script must strip it before parsing.
 echo '{"text":"fake transcription"}'
+echo "200"
 STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/curl"
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"

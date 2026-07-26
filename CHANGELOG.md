@@ -10,6 +10,70 @@ a major bump.
 This file is updated when substantive changes happen; small refactors,
 comment tweaks, and cosmetic fixes are not recorded here.
 
+## [3.1.2] — 2026-07-25
+
+### Fixed
+
+- **Known-speaker diarization was broken on macOS (E2BIG).** Registered
+  speaker references were inlined into curl's argv as base64 data URLs
+  (~1.2 MB for a 10 s sample), exceeding macOS `ARG_MAX` (~1 MB) — the
+  feature failed with "Argument list too long" for even a single speaker.
+  References now go through private temp files via curl's
+  `--form 'field=<file'` file-read syntax.
+- **Recording loop no longer spins when `rec` fails.** `record_utterance()`
+  now propagates rec's own exit status (`PIPESTATUS`), and the main loop
+  counts consecutive capture failures — after 3 it stops via `handle_exit`
+  instead of burning CPU forever. Silence (`-d` expiring with no speech)
+  is unaffected: rec exits 0 in that case.
+- **Transcriptions survive a missing clipboard tool.** When `pbcopy` /
+  `xclip` is unavailable, `handle_exit` falls back to saving the
+  accumulated text to a file instead of losing it. The `temp.txt`
+  intermediate is gone (piped directly to `pbcopy`).
+- **Non-2xx API responses are rejected by HTTP status.** curl now reports
+  `%{http_code}`; non-2xx responses and empty bodies (all retries failed)
+  skip the utterance with a warning. Previously, non-OpenAI error bodies
+  (FastAPI's `{"detail": ...}`, proxy HTML) could leak into transcripts
+  as an `Error` pseudo-transcription. The warning carries the API's own
+  message when there is one, so e.g. an HTTP 429 still says whether it was
+  a rate limit or an inactive account.
+- **The process exit status now reflects failure.** `convert_audio_to_text`
+  returns non-zero when an utterance fails (API/HTTP/backend error) rather
+  than only warning, and file mode (`-f`) propagates that as the process
+  exit status — so `whisper-stream -f x.mp3 > out.txt || alert` works.
+  Deliberate skips (audio below `MIN_AUDIO_DURATION`) stay 0, and the
+  real-time loop still ignores per-utterance failures so one bad request
+  cannot end a session. Giving up after 3 consecutive capture failures
+  also exits non-zero.
+- **The `%{http_code}` line is only stripped when it really is one.**
+  A pretty-printed JSON body from a server that emits no status line kept
+  its last line (`}`) instead of having it consumed as a status code.
+- **Terminating signals are trapped in file mode too.** `SIGTERM`/`SIGHUP`
+  are now handled alongside `SIGINT`/`SIGTSTP`, and the trap is installed
+  before the `-f` branch — previously a signal during file transcription
+  left the session work directory behind in `$TMPDIR`.
+
+### Added
+
+- **Startup dependency checks in `validate_config`.** jq is always
+  required; curl only for the api backend; `rec`/`sox` only for real-time
+  mode (file mode `-f` keeps working on machines without audio hardware);
+  missing `xclip` on Linux produces a warning, not a failure.
+- **Warning for `-p2/--pipe-to` combined with `--stdout`/`--jsonl`.**
+  The interleaved output breaks downstream parsers.
+
+### Changed
+
+- **Session files moved out of the CWD.** Audio chunks and
+  `temp_transcriptions.txt` now live in a per-session `mktemp -d`
+  directory, so concurrent instances no longer clobber each other.
+- **`-f` format/size checks are API-backend-only and case-insensitive.**
+  `flac`/`ogg`/`opus` and uppercase extensions (e.g. `.MP3`) are now
+  accepted for the API backend; the local backend only requires an
+  existing non-empty file.
+- At most one spinner is active at a time in real-time API mode.
+- Speaker selection in `--register-speakers` ignores non-numeric input
+  and uses `jq --argjson` like the delete path.
+
 ## [3.1.1] — 2026-07-04
 
 ### Fixed

@@ -204,7 +204,7 @@ whisper-stream --api-url http://127.0.0.1:2022/v1/audio/transcriptions
 
 英語への翻訳には`--backend local --translate`を使ってください(whisper.cppがネイティブ対応)。
 
-APIの制約: 1ファイル25MB、対応形式は`mp3`、`mp4`、`mpeg`、`mpga`、`m4a`、`wav`、`webm`。詳細は[OpenAI Speech to Text API](https://platform.openai.com/docs/guides/speech-to-text)を参照。
+APIの制約: 1ファイル25MB、対応形式は`mp3`、`mp4`、`mpeg`、`mpga`、`m4a`、`wav`、`webm`、`flac`、`ogg`、`opus`(大文字小文字を区別しない。サイズ・形式チェックはAPIバックエンドのみ)。詳細は[OpenAI Speech to Text API](https://platform.openai.com/docs/guides/speech-to-text)を参照。
 
 ## 作者
 

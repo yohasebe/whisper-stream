@@ -202,7 +202,9 @@ STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/whisper-cli"
 
   run convert_audio_to_text fake.mp3
-  [ "$status" -eq 0 ]
+  # A failed utterance now reports non-zero so file mode can propagate it;
+  # the real-time loop deliberately ignores the status and carries on.
+  [ "$status" -ne 0 ]
   # Stdout should be empty (utterance skipped), stderr (merged by bats) carries a warning.
   [[ "$output" != *"[local backend error]"* ]]
   [[ "$output" == *"local backend failed"* ]]
@@ -218,7 +220,9 @@ STUB
   JSONL_MODE=true
   STDOUT_MODE=true
   run convert_audio_to_text fake.mp3
-  [ "$status" -eq 0 ]
+  # A failed utterance now reports non-zero so file mode can propagate it;
+  # the real-time loop deliberately ignores the status and carries on.
+  [ "$status" -ne 0 ]
   # Output must contain no JSON line — the utterance is silently skipped.
   run grep -c '^{' <(printf '%s\n' "$output")
   [ "$output" = "0" ]
