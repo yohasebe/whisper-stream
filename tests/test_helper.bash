@@ -12,6 +12,8 @@ load_whisper_stream() {
   # shellcheck disable=SC1090
   source "$SCRIPT_PATH"
   unset WHISPER_STREAM_LIB
+  # Retries keep their count but not their backoff, so tests stay fast.
+  API_RETRY_BASE_DELAY=0
 }
 
 # Install a fake `curl` in a tmpdir-prefixed PATH so that tests can inspect

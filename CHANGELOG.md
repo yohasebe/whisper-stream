@@ -10,6 +10,25 @@ a major bump.
 This file is updated when substantive changes happen; small refactors,
 comment tweaks, and cosmetic fixes are not recorded here.
 
+## [3.3.0] — 2026-11-07
+
+### Changed
+
+- **Recording no longer waits for transcription.** Utterances queue in capture order while earlier ones are transcribed; this also applies to the local backend.
+- **Ctrl-C finishes the utterances recorded so far, including the one in progress, before exiting.** Press Ctrl-C again to discard them and exit at once.
+- **Rate limits (429) and server errors (500, 502, 503, 504) are retried,** as are network errors, timeouts, and 408, honouring the server's `Retry-After` up to 60 seconds. Billing, spend, and quota errors are not retried.
+
+### Added
+
+- **`--max-jobs <n>`** limits concurrent API requests in real-time mode (default: 4). Recording pauses, with a notice, only if 100 utterances are waiting.
+- **`--api-timeout <sec>`** sets the time limit for one API request (default: 120, or 600 with `-f`).
+
+### Fixed
+
+- **A transfer that broke off mid-response is reported as a failure** instead of printing the partial text.
+- **A response without transcript text is reported as a failure** instead of printing `Error` or an empty line; in `-f` mode the exit status is now non-zero.
+- **An audio encoding failure is reported as a capture failure** instead of being treated as a recorded utterance.
+
 ## [3.2.0] — 2026-09-24
 
 OpenAI now recommends `gpt-transcribe` for file transcription and has
@@ -186,8 +205,7 @@ its context hints.
 
 - `--vad` is **not** a replacement for the SoX silence detection in the
   recording loop. It only refines what whisper.cpp does with each chunk
-  the recording loop produces. SoX false positives are unaffected — for
-  those, see the longer-term ffmpeg migration discussion in CLAUDE.md.
+  the recording loop produces. SoX false positives are unaffected.
 - `--vad` is rejected on the API backend (`/v1/audio/transcriptions`
   has no equivalent flag).
 

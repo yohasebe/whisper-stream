@@ -68,10 +68,10 @@ SCRIPT="${BATS_TEST_DIRNAME}/../whisper-stream"
   [[ "$output" == *"dBFS"* ]] || [[ "$output" == *"-30d"* ]]
 }
 
-@test "version is 3.2.0" {
+@test "version is 3.3.0" {
   run "$SCRIPT" --version
   [ "$status" -eq 0 ]
-  [[ "$output" == *"3.2.0"* ]]
+  [[ "$output" == *"3.3.0"* ]]
 }
 
 @test "help text mentions --api-url" {
@@ -88,16 +88,6 @@ SCRIPT="${BATS_TEST_DIRNAME}/../whisper-stream"
   [[ "$output" != *"-g, "* ]]
 }
 
-@test "main loop serializes convert_audio_to_text when backend is local" {
-  # The local branch must NOT use background execution (&) because multiple
-  # whisper-cli processes would contend for GPU resources. A future refactor
-  # that accidentally reverts the split should fail this regression test.
-  run awk '/if \[ "\$BACKEND" = "local" \]; then/,/else/' "$SCRIPT"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'convert_audio_to_text "$OUTPUT_FILE"'* ]]
-  # Inside the local branch the call must not be backgrounded.
-  ! echo "$output" | grep -E 'convert_audio_to_text "\$OUTPUT_FILE" &'
-}
 
 # --- signal handling ---------------------------------------------------------
 

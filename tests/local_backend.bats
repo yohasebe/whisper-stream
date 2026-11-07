@@ -292,7 +292,7 @@ STUB
 
 @test "validate_config warns when --model-path is set for backend=api" {
   BACKEND="api"
-  MODEL_PATH="/tmp/some-model.bin"
+  MODEL_PATH="$BATS_TEST_TMPDIR/some-model.bin"
   run validate_config
   [ "$status" -eq 0 ]
   [[ "$output" == *"--model-path is ignored"* ]]

@@ -1,9 +1,8 @@
 #!/usr/bin/env bats
 
 # Tests for record_utterance() — the seam between whisper-stream and the
-# audio-capture tool (currently SoX). A future migration (ffmpeg, pw-record,
-# etc.) should only need to change this one function, and these tests pin
-# down the contract it must honour.
+# audio-capture tool (SoX). These tests pin down the contract any recorder
+# behind it must honour.
 
 load test_helper
 
@@ -126,6 +125,18 @@ STUB
 
   run record_utterance out.mp3
   [ "$status" -eq 3 ]
+}
+
+@test "record_utterance returns the encoder's status when only the encoder fails" {
+  cat > "$BATS_TEST_TMPDIR/bin/sox" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+exit 9
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/sox"
+
+  run record_utterance out.mp3
+  [ "$status" -eq 9 ]
 }
 
 @test "record_utterance returns zero when rec succeeds" {

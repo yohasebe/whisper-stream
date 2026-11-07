@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default configuration and versioning
-VERSION="3.2.0"
+VERSION="3.3.0"
 
 # Setting the default values for the script parameters
 MIN_VOLUME=1%                  # Minimum volume threshold
@@ -34,7 +34,13 @@ OPENAI_LEGACY_STT_SHUTDOWN="2027-02-26"
 BACKEND="api"                  # "api" (OpenAI or compatible) or "local" (whisper.cpp)
 MODEL_PATH=""                  # Path to ggml model file for local backend
 API_URL=""                     # Override the API endpoint (e.g., http://127.0.0.1:2022/v1/audio/transcriptions for whisper-server)
-VAD=false                      # Use whisper.cpp's built-in VAD to filter non-speech (local backend only)
+API_TIMEOUT=""                 # Per-attempt request time limit in seconds (--api-timeout; empty: 120, or 600 with -f)
+API_MAX_ATTEMPTS=3             # Requests per utterance, including the first
+API_RETRY_BASE_DELAY=1         # Backoff before the 2nd attempt in seconds; doubles each time
+API_RETRY_MAX_WAIT=60          # Give up rather than wait longer than this for a server-requested retry
+MAX_JOBS=4                     # Concurrent API requests in real-time mode (--max-jobs)
+MAX_QUEUE=100                  # Recorded utterances waiting for a worker; recording pauses when full
+VAD=false                     # Use whisper.cpp's built-in VAD to filter non-speech (local backend only)
 VAD_MODEL_PATH=""              # Path to the VAD model (silero) file
 WHISPER_CLI="whisper-cli"      # Resolved whisper-cli command (set by validate_config)
 # Homebrew opt paths exist even when the whisper-cpp keg is UNLINKED, which
@@ -80,7 +86,7 @@ function display_help() {
   echo "                              a self-hosted OpenAI-compatible server such as"
   echo "                              whisper.cpp's whisper-server. When set, the"
   echo "                              token is optional."
-  echo "      --vad                   (local backend only) Enable whisper.cpp's"
+  echo "      --vad                (local backend only) Enable whisper.cpp's"
   echo "                              built-in VAD to skip non-speech inside each"
   echo "                              chunk. Improves transcription quality and"
   echo "                              reduces hallucinations such as 'Thank you'."
@@ -90,13 +96,14 @@ function display_help() {
   echo ""
   echo "API Options (backend=api):"
   echo "  -t, --token <value>         Set the API token (only required for the OpenAI endpoint)"
-  echo "  -m, --model <value>         Set the model. Any model name is passed through;"
-  echo "                              unknown names produce a warning. Known values:"
+  echo "  -m, --model <value>         Set the model. Unknown names are passed through"
+  echo "                              with a warning. Known values:"
   echo "                              gpt-transcribe (default), gpt-4o-transcribe-diarize"
   echo "                              (for --diarize), and gpt-4o-transcribe /"
   echo "                              gpt-4o-mini-transcribe (removed by OpenAI on"
   echo "                              $OPENAI_LEGACY_STT_SHUTDOWN)."
-  echo "  -r, --prompt <value>        Set the prompt (works on both backends)"
+  echo "  -r, --prompt <value>        Set the prompt (works on both backends; not sent"
+  echo "                              with gpt-4o-transcribe-diarize)"
   echo "  -l, --language <value>      Set the input language as an ISO 639-1 code (e.g. 'en')."
   echo "                              gpt-transcribe accepts several: '-l en,ja'."
   echo "      --keyword <term>        A term expected in the audio (product name, acronym)."
@@ -104,6 +111,12 @@ function display_help() {
   echo "                              Use --keyword=<term> for a term starting with '-'."
   echo "      --keywords-file <file>  Read keywords from a file, one term per line."
   echo "  -tr, --translate            Translate to English (local backend only)"
+  echo "      --api-timeout <sec>     Time limit for one API request (default: 120, or"
+  echo "                              600 with -f). Network errors, timeouts, rate limits,"
+  echo "                              and server errors are retried twice."
+  echo "      --max-jobs <n>          Maximum concurrent API requests in real-time mode"
+  echo "                              (default: 4). Utterances recorded meanwhile wait in"
+  echo "                              a queue; recording pauses only if $MAX_QUEUE are waiting."
   echo ""
   echo "Output Options:"
   echo "  -p, --path <value>          Set the output directory path to create the transcription file"
@@ -669,6 +682,9 @@ function validate_config() {
   if [ "$BACKEND" = "local" ] && [ -n "$API_URL" ]; then
     echo "Warning: --api-url is ignored when --backend local is used." >&2
   fi
+  if [ "$BACKEND" = "local" ] && [ -n "$API_TIMEOUT" ]; then
+    echo "Warning: --api-timeout is ignored when --backend local is used." >&2
+  fi
   if [ "$BACKEND" = "api" ] && [ "$VAD" = true ]; then
     echo "Error: --vad is only supported by the local backend (whisper.cpp)." >&2
     exit 1
@@ -998,6 +1014,23 @@ while [[ $# -gt 0 ]]; do
       shift
       shift
       ;;
+    --api-timeout|--max-jobs)
+      if [[ ! $2 || $2 == -* ]]; then
+        echo "Error: Missing value for $1" >&2
+        exit 1
+      fi
+      if ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Error: $1 requires a positive integer, got '$2'" >&2
+        exit 1
+      fi
+      if [ "$1" = "--api-timeout" ]; then
+        API_TIMEOUT="$2"
+      else
+        MAX_JOBS="$2"
+      fi
+      shift
+      shift
+      ;;
     --vad)
       VAD=true
       shift
@@ -1105,8 +1138,6 @@ if [ "$BACKEND" = "api" ] && [ -z "$TOKEN" ] && [ -z "$API_URL" ]; then
   echo "No OpenAI API key provided. Set OPENAI_API_KEY, pass -t, or use --api-url to point at a token-less endpoint." >&2
   exit 1
 fi
-
-output_files=() # Array to store the names of output audio files
 
 # Per-session work directory: keeps the output_*.mp3 chunks and
 # temp_transcriptions.txt out of the caller's CWD, so concurrent instances
@@ -1249,26 +1280,144 @@ function get_input_volume() {
   esac
 }
 
-# Display a rotating spinner animation
-function spinner() {
-  local pid=$1
-  local delay=0.1
-  local spinstr='|/-\\'
-  while kill -0 $pid 2>/dev/null; do
-    local temp=${spinstr#?}
-    printf "\r\e[1;31m%c\e[0m" "$spinstr"
-    local spinstr=$temp${spinstr%"$temp"}
-    sleep $delay
+# Number of recorded utterances in directory $1 (output_<seq>.mp3 files).
+function count_utterances() {
+  local -a files=("$1"/output_*.mp3)
+  if [ -e "${files[0]}" ]; then
+    echo "${#files[@]}"
+  else
+    echo 0
+  fi
+}
+
+# Real-time mode: transcribe the utterances the main loop leaves in
+# $QUEUE_DIR, in capture order, with at most $1 running at once. Each file
+# moves to $ACTIVE_DIR while its worker runs, and convert_audio_to_text
+# removes it. Runs in the background so recording never waits for the API.
+# Once $WORK_DIR/stop exists it finishes the queue and exits; it exits at
+# once if the main shell is gone. Draws the spinner while workers run.
+function dispatch_utterances() {
+  local max_jobs=$1
+  local -a running=() still=() queued=()
+  local pid file name seq spinner=false spun=false frames='|/-\' frame=0
+  if [ "$STDOUT_MODE" = false ] && [ -t 1 ]; then
+    spinner=true
+  fi
+  local stopping=false
+  while true; do
+    # Look for the stop request BEFORE looking at the queue: the main shell
+    # creates it only after its last `mv` into the queue, so once it is seen,
+    # the queue checked below holds every utterance there will be.
+    [ -e "$WORK_DIR/stop" ] && stopping=true
+
+    still=()
+    for pid in "${running[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        still+=("$pid")
+      else
+        # Collect the status; one failed utterance never stops the session.
+        wait "$pid" 2>/dev/null || true
+      fi
+    done
+    running=("${still[@]}")
+
+    queued=("$QUEUE_DIR"/output_*.mp3)
+    for file in "${queued[@]}"; do
+      [ -e "$file" ] || break
+      [ ${#running[@]} -lt "$max_jobs" ] || break
+      name=$(basename "$file")
+      if ! mv "$file" "$ACTIVE_DIR/$name"; then
+        echo "Warning: could not start transcribing $name; skipping it" >&2
+        rm -f "$file"
+        continue
+      fi
+      seq=${name#output_}
+      seq=$((10#${seq%.mp3}))
+      convert_audio_to_text "$ACTIVE_DIR/$name" "$seq" &
+      running+=("$!")
+    done
+
+    if [ "$stopping" = true ] && [ ${#running[@]} -eq 0 ] \
+       && [ "$(count_utterances "$QUEUE_DIR")" -eq 0 ]; then
+      break
+    fi
+    kill -0 $$ 2>/dev/null || break
+
+    if [ "$spinner" = true ]; then
+      if [ ${#running[@]} -gt 0 ]; then
+        printf "\r\e[1;31m%s\e[0m" "${frames:$frame:1}"
+        frame=$(((frame + 1) % 4))
+        spun=true
+      elif [ "$spun" = true ]; then
+        printf "\r\e[K"
+        spun=false
+      fi
+    fi
+    sleep 0.1
   done
-  printf "\r\e[K"
+  if [ "$spun" = true ]; then
+    printf "\r\e[K"
+  fi
+}
+
+# Called before each recording. Blocks while MAX_QUEUE utterances are
+# waiting, so a long API outage cannot fill the disk. Returns non-zero if the
+# dispatcher has died: nothing would transcribe what is recorded next.
+function wait_for_queue_space() {
+  local paused=false
+  kill -0 "$DISPATCHER_PID" 2>/dev/null || return 1
+  while [ "$(count_utterances "$QUEUE_DIR")" -ge "$MAX_QUEUE" ]; do
+    if ! kill -0 "$DISPATCHER_PID" 2>/dev/null; then
+      return 1
+    fi
+    if [ "$paused" = false ]; then
+      echo "Warning: $MAX_QUEUE utterances are waiting for transcription; recording paused" >&2
+      paused=true
+    fi
+    sleep 0.5
+  done
+  if [ "$paused" = true ]; then
+    echo "Recording resumed" >&2
+  fi
+  return 0
+}
+
+# Kill process $1 and all its descendants. Each process is stopped before
+# its children are listed, so no process in the tree can start one that is
+# missed, and the whole tree is collected before any kill: killing a parent
+# first would orphan its children out of reach. Processes that survive
+# SIGTERM for 2 s get SIGKILL.
+function kill_process_tree() {
+  local -a pids=("$1") alive=()
+  local i=0 pid child tries=0
+  while [ $i -lt ${#pids[@]} ]; do
+    kill -STOP "${pids[$i]}" 2>/dev/null
+    for child in $(pgrep -P "${pids[$i]}" 2>/dev/null); do
+      pids+=("$child")
+    done
+    i=$((i + 1))
+  done
+  kill -TERM "${pids[@]}" 2>/dev/null
+  kill -CONT "${pids[@]}" 2>/dev/null
+  while true; do
+    alive=()
+    for pid in "${pids[@]}"; do
+      kill -0 "$pid" 2>/dev/null && alive+=("$pid")
+    done
+    [ ${#alive[@]} -eq 0 ] && return 0
+    if [ $tries -ge 20 ]; then
+      kill -KILL "${alive[@]}" 2>/dev/null
+      return 0
+    fi
+    sleep 0.1
+    tries=$((tries + 1))
+  done
 }
 
 # Record a single utterance into the given file, blocking until trailing
-# silence is detected (or DURATION expires). This function is the SEAM
-# between whisper-stream and the audio-capture tool: a future migration away
-# from SoX (ffmpeg, pw-record, a dedicated capture tool, ...) should only
-# need to replace the body of this function. See "SoX exit triggers" in
-# CLAUDE.md for when and how that migration would happen.
+# silence is detected (or DURATION expires). All use of the audio-capture
+# tool for utterances lives here, so another recorder would replace only the
+# body of this function.
 #
 # Contract (pinned by tests/recording.bats):
 #   - blocks until the utterance is complete and the file is fully written
@@ -1277,6 +1426,7 @@ function spinner() {
 #   - returns the capture tool's own exit status, so the caller can tell
 #     "rec failed to start" (no mic, permission denied) apart from
 #     "rec ran fine but nobody spoke" (which exits 0)
+#   - returns the encoder's status when capture succeeded but encoding failed
 function record_utterance() {
   local out_file=$1
   local -a rec_args=(-q -V0 -e signed -L -c 1 -b 16 -r 44100 -t raw -)
@@ -1285,8 +1435,11 @@ function record_utterance() {
   fi
   rec_args+=(silence 1 0.1 "$MIN_VOLUME" 1 "$SILENCE_LENGTH" "$MIN_VOLUME")
   rec "${rec_args[@]}" | sox -t raw -r 44100 -b 16 -e signed -c 1 - "$out_file"
-  # The pipeline's $? would be sox's; surface rec's status instead.
-  return "${PIPESTATUS[0]}"
+  # rec's status comes first: it tells "no device" apart from silence. An
+  # encoder failure (sox) must not pass for a recorded utterance either.
+  local -a statuses=("${PIPESTATUS[@]}")
+  [ "${statuses[0]}" -ne 0 ] && return "${statuses[0]}"
+  return "${statuses[1]}"
 }
 
 # Run the local whisper.cpp binary against an audio file and echo the
@@ -1329,6 +1482,100 @@ function run_local_whisper_cpp() {
   local jq_rc=$?
   rm -f "$json_file"
   return $jq_rc
+}
+
+# Classify one API attempt: "ok" (a response to check), "retry" (transient:
+# network failure, timeout, rate limit, overload, 5xx), or "fail". Billing,
+# spend, and quota 429s fail at once: waiting does not restore access.
+function api_attempt_verdict() {
+  local curl_status=$1 http_code=$2 body=$3
+  if [ "$curl_status" -ne 0 ]; then
+    case "$curl_status" in
+      # proxy/DNS/connect failure, partial transfer, timeout, TLS handshake,
+      # empty reply, send/receive error
+      5|6|7|18|28|35|52|55|56) echo retry ;;
+      *) echo fail ;;
+    esac
+    return 0
+  fi
+  case "$http_code" in
+    ""|2??) echo ok ;;
+    408|500|502|503|504) echo retry ;;
+    429)
+      if echo "$body" | jq -e '
+          .error | type == "object" and (
+            .type == "insufficient_quota" or
+            (.code | IN("insufficient_quota", "credit_balance_exhausted",
+                        "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
+                        "organization_usage_limit_exceeded")))' >/dev/null 2>&1; then
+        echo fail
+      else
+        echo retry
+      fi
+      ;;
+    *) echo fail ;;
+  esac
+}
+
+# Seconds the server asked to wait before a retry, read from the last header
+# block in the file curl -D wrote: Retry-After as seconds or as an HTTP-date
+# (0 when already past), or retry-after-ms rounded up; the larger when both
+# are sent. Prints nothing when absent or unreadable.
+function retry_after_seconds() {
+  local parsed ms ra secs="" epoch
+  parsed=$(LC_ALL=C awk '
+    { sub(/\r$/, "") }
+    tolower($1) ~ /^http\// { ra = ""; ms = "" }
+    tolower($1) == "retry-after:" { ra = $0; sub(/^[^:]*:[ \t]*/, "", ra) }
+    tolower($1) == "retry-after-ms:" && $2 ~ /^[0-9]+(\.[0-9]+)?$/ {
+      s = $2 / 1000
+      ms = (s == int(s)) ? s : int(s) + 1
+    }
+    END { print ms; print ra }' "$1" 2>/dev/null) || return 0
+  ms=${parsed%%$'\n'*}
+  ra=${parsed#*$'\n'}
+
+  if [[ "$ra" =~ ^[0-9]+$ ]]; then
+    secs=$((10#$ra))
+  elif [ -n "$ra" ]; then
+    # HTTP-date (RFC 9110): GNU date, then BSD date.
+    epoch=$(LC_ALL=C date -u -d "$ra" +%s 2>/dev/null \
+      || LC_ALL=C date -u -j -f '%a, %d %b %Y %H:%M:%S GMT' "$ra" +%s 2>/dev/null) || epoch=""
+    if [[ "$epoch" =~ ^[0-9]+$ ]]; then
+      secs=$((epoch - $(date +%s)))
+      [ "$secs" -lt 0 ] && secs=0
+    fi
+  fi
+  if [ -n "$ms" ] && { [ -z "$secs" ] || [ "$ms" -gt "$secs" ]; }; then
+    secs=$ms
+  fi
+  if [ -n "$secs" ]; then
+    echo "$secs"
+  fi
+}
+
+# Backoff in seconds before attempt $1 + 1: API_RETRY_BASE_DELAY doubled per
+# attempt, capped at 30, plus up to 1 s of jitter.
+function api_backoff_delay() {
+  LC_ALL=C awk -v base="$API_RETRY_BASE_DELAY" -v n="$1" -v r="$RANDOM" 'BEGIN {
+    d = base * 2 ^ (n - 1)
+    if (d > 30) d = 30
+    if (base > 0) d += r / 32767
+    printf "%.3f", d
+  }'
+}
+
+# Short reason for a curl exit status ($2 is the time limit in seconds).
+function curl_failure_reason() {
+  case "$1" in
+    6) echo "could not resolve host" ;;
+    7) echo "could not connect" ;;
+    28) echo "no response within ${2}s" ;;
+    35) echo "TLS handshake failed" ;;
+    52) echo "empty reply from server" ;;
+    18|55|56) echo "connection lost" ;;
+    *) echo "curl exit status $1" ;;
+  esac
 }
 
 # Convert the audio to text using the OpenAI speech-to-text API or local whisper.cpp.
@@ -1437,20 +1684,39 @@ function convert_audio_to_text() {
     response_format="diarized_json"
   fi
 
-  # Write the API credentials to a private temp config file when a token is
-  # available. This keeps the bearer token out of argv (visible via ps).
+  # Per-request temp files (credentials, response headers, speaker
+  # references). In a session they go into the private WORK_DIR, so that
+  # removing it also removes them when a worker is killed mid-request.
   # mktemp uses a portable template (mktemp -t has incompatible semantics on
   # GNU vs BSD).
+  local temp_dir="${WORK_DIR:-${TMPDIR:-/tmp}}"
+  local -a temp_files=()
+
+  # Write the API credentials to a private temp config file when a token is
+  # available. This keeps the bearer token out of argv (visible via ps).
   local auth_file=""
-  local -a speaker_ref_files=()
   if [ -n "$TOKEN" ]; then
-    auth_file=$(mktemp "${TMPDIR:-/tmp}/whisper-stream.XXXXXX") || {
+    auth_file=$(mktemp "$temp_dir/whisper-stream.XXXXXX") || {
       echo "Error: failed to create temporary auth file" >&2
       return 1
     }
+    temp_files+=("$auth_file")
     chmod 600 "$auth_file"
     printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" > "$auth_file"
   fi
+
+  # Response headers, for the server's Retry-After.
+  local header_file
+  header_file=$(mktemp "$temp_dir/whisper-stream-headers.XXXXXX") || {
+    echo "Error: failed to create temporary header file" >&2
+    rm -f "${temp_files[@]}"
+    return 1
+  }
+  temp_files+=("$header_file")
+
+  # Each attempt has its own time limit; file mode allows for large uploads.
+  local timeout=${API_TIMEOUT:-120}
+  [ -n "$AUDIO_FILE" ] && timeout=${API_TIMEOUT:-600}
 
   # Build curl arguments as an array so that user-controlled fields
   # (PROMPT, LANGUAGE, file paths) are never re-interpreted by the shell.
@@ -1463,6 +1729,9 @@ function convert_audio_to_text() {
   # upload and the speaker reference files below).
   local curl_args=(
     -s --request POST
+    --connect-timeout 15
+    --max-time "$timeout"
+    -D "$header_file"
     -w $'\n%{http_code}'
     --url "$base_url"
     --form "file=@$output_file"
@@ -1514,15 +1783,14 @@ function convert_audio_to_text() {
           # ARG_MAX (1 MB on macOS) for typical 2-10 s samples — this made
           # known-speaker diarization fail with E2BIG.
           encoded_ref=$(encode_speaker_reference "$speaker_file")
-          ref_file=$(mktemp "${TMPDIR:-/tmp}/whisper-stream-speaker.XXXXXX") || {
+          ref_file=$(mktemp "$temp_dir/whisper-stream-speaker.XXXXXX") || {
             echo "Error: failed to create temporary speaker reference file" >&2
-            [ -n "$auth_file" ] && rm -f "$auth_file"
-            [ ${#speaker_ref_files[@]} -gt 0 ] && rm -f "${speaker_ref_files[@]}"
+            rm -f "${temp_files[@]}"
             return 1
           }
+          temp_files+=("$ref_file")
           chmod 600 "$ref_file"
           printf '%s' "$encoded_ref" > "$ref_file"
-          speaker_ref_files+=("$ref_file")
           curl_args+=(--form-string "known_speaker_names[]=$speaker_name")
           curl_args+=(--form "known_speaker_references[]=<$ref_file")
         fi
@@ -1530,51 +1798,68 @@ function convert_audio_to_text() {
     fi
   fi
 
-  # Safety net: remove the credential/reference temp files even if the
-  # function is interrupted by a signal (SIGINT/SIGTERM) before the explicit
-  # cleanup below. Set after curl_args is built so it covers both file kinds.
-  if [ -n "$auth_file" ] || [ ${#speaker_ref_files[@]} -gt 0 ]; then
-    trap 'rm -f "$auth_file" "${speaker_ref_files[@]}"' EXIT
-  fi
+  # Safety net: remove the temp files even if the function is interrupted by
+  # a signal (SIGINT/SIGTERM) before the explicit cleanup below.
+  trap 'rm -f "${temp_files[@]}"' EXIT
 
-  local maxretries=3
-  local response=""
-  local exit_code=1
-
-  while [ $exit_code -ne 0 ] && [ $maxretries -gt 0 ]; do
+  # The whole request is retried on transient failures; the outcome of the
+  # last attempt is what gets reported below.
+  local attempt=1 response="" curl_status=0 http_code="" verdict retry_after delay
+  while true; do
+    : > "$header_file"
     response=$(curl "${curl_args[@]}")
-    exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-      # Route progress/retry indicators to stderr, and only when we're
-      # attached to a real terminal. Pipe-native mode (STDOUT_MODE) skips
-      # them entirely so that callers capturing 2>&1 get a clean stream.
-      if [ "$STDOUT_MODE" = false ] && [ -t 2 ]; then
-        printf "\e[1;31m.\e[0m" >&2
+    curl_status=$?
+
+    # Split off the status line that -w appends. Only a bare 3-digit final
+    # line counts: tolerating its absence must not eat the last line of a
+    # pretty-printed JSON body from a server (or test double) that did not
+    # produce one.
+    http_code=""
+    if [[ "$response" == *$'\n'* ]]; then
+      local last_line="${response##*$'\n'}"
+      if [[ "$last_line" =~ ^[0-9]{3}$ ]]; then
+        http_code="$last_line"
+        response="${response%$'\n'*}"
       fi
-      maxretries=$((maxretries - 1))
     fi
+
+    verdict=$(api_attempt_verdict "$curl_status" "$http_code" "$response")
+    if [ "$verdict" != "retry" ] || [ "$attempt" -ge "$API_MAX_ATTEMPTS" ]; then
+      break
+    fi
+    retry_after=$(retry_after_seconds "$header_file")
+    if [ -n "$retry_after" ] && [ "$retry_after" -gt "$API_RETRY_MAX_WAIT" ]; then
+      echo "Warning: the server asked to wait ${retry_after}s before retrying (more than ${API_RETRY_MAX_WAIT}s); not retrying" >&2
+      break
+    fi
+    delay=$(api_backoff_delay "$attempt")
+    if [ -n "$retry_after" ] && LC_ALL=C awk -v r="$retry_after" -v d="$delay" 'BEGIN { exit !(r + 0 > d + 0) }'; then
+      delay=$retry_after
+    fi
+    # Route progress/retry indicators to stderr, and only when we're
+    # attached to a real terminal. Pipe-native mode (STDOUT_MODE) skips
+    # them entirely so that callers capturing 2>&1 get a clean stream.
+    if [ "$STDOUT_MODE" = false ] && [ -t 2 ]; then
+      printf "\e[1;31m.\e[0m" >&2
+    fi
+    sleep "$delay"
+    attempt=$((attempt + 1))
   done
 
-  if [ -n "$auth_file" ] || [ ${#speaker_ref_files[@]} -gt 0 ]; then
-    [ -n "$auth_file" ] && rm -f "$auth_file"
-    [ ${#speaker_ref_files[@]} -gt 0 ] && rm -f "${speaker_ref_files[@]}"
-    trap - EXIT
-  fi
+  rm -f "${temp_files[@]}"
+  trap - EXIT
   if [ "$STDOUT_MODE" = false ] && [ -t 2 ]; then
     printf "\r\e[K" >&2
   fi
 
-  # Split off the status line that -w appends. Only a bare 3-digit final line
-  # counts: tolerating its absence must not eat the last line of a
-  # pretty-printed JSON body from a server (or test double) that did not
-  # produce one.
-  local http_code=""
-  if [[ "$response" == *$'\n'* ]]; then
-    local last_line="${response##*$'\n'}"
-    if [[ "$last_line" =~ ^[0-9]{3}$ ]]; then
-      http_code="$last_line"
-      response="${response%$'\n'*}"
+  # A transfer that failed (even after a 200 status and part of the body)
+  # is not a transcript.
+  if [ "$curl_status" -ne 0 ]; then
+    echo "Warning: API request failed ($(curl_failure_reason "$curl_status" "$timeout")); skipping utterance" >&2
+    if [ -z "$AUDIO_FILE" ]; then
+      rm -f "$output_file"
     fi
+    return 1
   fi
 
   # Reject non-2xx responses even when the body is not an OpenAI-style error
@@ -1605,10 +1890,8 @@ function convert_audio_to_text() {
     return 1
   fi
 
-  # curl failing through all retries leaves an empty body; skip rather than
-  # emit a bogus "Error" transcription.
   if [ -z "$response" ]; then
-    echo "Warning: empty API response (request failed after retries); skipping utterance" >&2
+    echo "Warning: empty API response; skipping utterance" >&2
     if [ -z "$AUDIO_FILE" ]; then
       rm -f "$output_file"
     fi
@@ -1628,6 +1911,28 @@ function convert_audio_to_text() {
     return 1
   fi
 
+  # A 2xx body must be a transcription object: an HTML page from a proxy, a
+  # truncated body, or JSON without the text would otherwise be printed (or
+  # accumulated) as if it were what was said. An empty text is valid.
+  local response_shape='type == "object" and (.text | type) == "string"'
+  if [ "$response_format" = "diarized_json" ]; then
+    response_shape='type == "object" and (
+      if (.segments | type) == "array" then
+        all(.segments[]; (.start | type) == "number" and (.speaker | type) == "string" and (.text | type) == "string")
+      else
+        (.text | type) == "string"
+      end)'
+  fi
+  # -s: the body must be exactly one JSON value (jq -e alone judges only the
+  # last of several).
+  if ! echo "$response" | jq -s -e "length == 1 and (.[0] | $response_shape)" >/dev/null 2>&1; then
+    echo "Warning: unexpected API response (no transcript text); skipping utterance" >&2
+    if [ -z "$AUDIO_FILE" ]; then
+      rm -f "$output_file"
+    fi
+    return 1
+  fi
+
   # Process response based on format
   local transcription=""
   local display_text=""
@@ -1636,25 +1941,19 @@ function convert_audio_to_text() {
     # Diarized response - format for display
     transcription="$response"
 
-    # Extract and format segments with speaker labels. `|| true` keeps jq's
-    # exit status from poisoning $? on malformed bodies.
+    # Format segments with speaker labels, or fall back to the plain text.
     display_text=$(echo "$response" | jq -r '
-      if .segments then
+      if (.segments | type) == "array" then
         .segments[] |
         "[" + (.start | floor | tostring) + "s] " + .speaker + ": " + .text
       else
-        .text // "Error processing response"
+        .text
       end
     ' 2>/dev/null || true)
 
-    if [ -z "$display_text" ]; then
-      # Fallback to plain text if segments not available
-      display_text=$(echo "$response" | jq -r '.text // "Error"' 2>/dev/null || true)
-    fi
-
   else
     # Plain JSON response
-    transcription=$(echo "$response" | jq -r '.text // "Error"' 2>/dev/null || true)
+    transcription=$(echo "$response" | jq -r '.text')
     display_text="$transcription"
   fi
 
@@ -1720,16 +2019,62 @@ function handle_exit() {
   # Optional $1 is the status to exit with. Defaults to 0 so that using
   # this function directly as a signal handler (trap) still exits clean.
   local exit_status=${1:-0}
-  # Wait for all background jobs to finish
+
+  # A second signal while the queue drains interrupts the `wait` below
+  # (bash 3.2), or re-enters this handler first (bash 4+). Either way the
+  # first invocation handles it, so a re-entry does nothing.
+  if [ "${EXIT_IN_PROGRESS:-false}" = true ]; then
+    return
+  fi
+  EXIT_IN_PROGRESS=true
+
+  # Real-time mode: let the dispatcher finish the utterances already
+  # recorded, including the one being recorded when the signal arrived (the
+  # trap runs after the recording pipeline has exited, so that file is
+  # complete). The stop request is created only after this last `mv`.
+  # Another Ctrl-C stops waiting and discards the rest.
+  if [ -n "${DISPATCHER_PID:-}" ]; then
+    if [ -n "${OUTPUT_FILE:-}" ] && [ -s "$OUTPUT_FILE" ] \
+       && ! mv "$OUTPUT_FILE" "$QUEUE_DIR/"; then
+      echo "Error: could not queue the utterance being recorded; it was not transcribed." >&2
+      exit_status=1
+    fi
+    : > "$WORK_DIR/stop"
+    local pending discarded=false dispatcher_status=0
+    pending=$(( $(count_utterances "$QUEUE_DIR") + $(count_utterances "$ACTIVE_DIR") ))
+    if [ "$pending" -gt 0 ] && kill -0 "$DISPATCHER_PID" 2>/dev/null; then
+      echo "Finishing $pending recorded utterance(s); press Ctrl-C again to discard them." >&2
+    fi
+    wait "$DISPATCHER_PID" 2>/dev/null
+    dispatcher_status=$?
+    if [ "$dispatcher_status" -ne 0 ] && kill -0 "$DISPATCHER_PID" 2>/dev/null; then
+      # The wait was interrupted by another signal: discard the rest.
+      pending=$(( $(count_utterances "$QUEUE_DIR") + $(count_utterances "$ACTIVE_DIR") ))
+      kill_process_tree "$DISPATCHER_PID"
+      wait "$DISPATCHER_PID" 2>/dev/null
+      discarded=true
+      if [ "$pending" -gt 0 ]; then
+        echo "Discarded $pending utterance(s)." >&2
+      fi
+    elif [ "$dispatcher_status" -ne 0 ] && [ "$dispatcher_status" -ne 127 ]; then
+      # 127: no status to collect (not a child, e.g. in tests).
+      echo "Error: the transcription worker failed (exit status $dispatcher_status)." >&2
+      exit_status=1
+    fi
+    # Anything still queued now was not discarded on request: the
+    # dispatcher died. That fails the session.
+    if [ "$discarded" = false ]; then
+      pending=$(( $(count_utterances "$QUEUE_DIR") + $(count_utterances "$ACTIVE_DIR") ))
+      if [ "$pending" -gt 0 ]; then
+        echo "Error: $pending recorded utterance(s) were not transcribed: the transcription worker stopped." >&2
+        exit_status=1
+      fi
+    fi
+  fi
+
+  # Wait for any other background jobs, then kill what is left.
   wait
-
-  # Kill all child processes
   pkill -P $$
-
-  # Remove all output audio files
-  for file in "${output_files[@]}"; do
-    rm -f "$file"
-  done
 
   # Read the accumulated transcription (if any), then drop the per-session
   # work directory — it holds the audio chunks and temp_transcriptions.txt.
@@ -1895,31 +2240,46 @@ fi
 display_settings
 
 
-# Main loop to continuously record audio, detect silence, and transcribe audio
+# Main loop: record utterances back to back and queue them for the
+# dispatcher, so recording never waits for a transcription. The API backend
+# runs up to MAX_JOBS requests at once; the local backend runs one
+# whisper-cli at a time (several contend for the GPU/CPU and can
+# destabilize Metal on Apple Silicon), which also keeps its output in order.
+QUEUE_DIR="$WORK_DIR/queue"
+ACTIVE_DIR="$WORK_DIR/active"
+mkdir -p "$QUEUE_DIR" "$ACTIVE_DIR"
+if [ "$BACKEND" = "local" ]; then
+  dispatch_utterances 1 &
+else
+  dispatch_utterances "$MAX_JOBS" &
+fi
+DISPATCHER_PID=$!
+
 rec_failures=0  # consecutive rec-launch failures (busy-loop guard)
-spinner_pid=""
 utterance_seq=0 # capture sequence number (JSONL `seq`)
 while true; do
-  # The sequence number keeps chunk names unique; the work dir is per session.
+  if ! wait_for_queue_space; then
+    echo "Error: the transcription worker stopped unexpectedly." >&2
+    handle_exit 1
+  fi
+
+  # The sequence number keeps chunk names unique and in capture order; the
+  # work dir is per session.
   utterance_seq=$((utterance_seq + 1))
   OUTPUT_FILE=$(printf '%s/output_%06d.mp3' "$WORK_DIR" "$utterance_seq")
 
-  # Add the output file to the array
-  output_files+=("$OUTPUT_FILE")
-
-  # Add a prompt at the beginning of the recording
-  # echo -n $'\e[1;32m'▶ $'\e[0m'
-
   # Record one utterance (blocks until silence or the duration limit).
-  # A non-zero status means rec itself failed to run (no device, permission
-  # denied, ...) — NOT silence: rec exits 0 normally, so `-d 60` with nobody
-  # speaking lands in the "-s check" below, never here. Without this guard a
-  # failing rec would spin the loop at full speed forever.
+  # A non-zero status means the capture tool failed (no device, permission
+  # denied, encoder error, ...) — NOT silence: rec exits 0 normally, so
+  # `-d 60` with nobody speaking lands in the "-s check" below, never here.
+  # Without this guard a failing rec would spin the loop at full speed
+  # forever.
   if record_utterance "$OUTPUT_FILE"; then
     rec_failures=0
   else
+    rm -f "$OUTPUT_FILE"
     rec_failures=$((rec_failures + 1))
-    echo "Warning: audio capture (rec) failed ($rec_failures/3)" >&2
+    echo "Warning: audio capture failed ($rec_failures/3)" >&2
     if [ "$rec_failures" -ge 3 ]; then
       echo "Error: audio capture failed 3 times in a row; giving up." >&2
       handle_exit 1
@@ -1928,33 +2288,15 @@ while true; do
     continue
   fi
 
-  # Check if the audio file is created successfully
+  # Hand a non-empty recording to the dispatcher. The rename is atomic, so
+  # it never picks up a file that is still being written.
   if [ -s "$OUTPUT_FILE" ]; then
-    if [ "$BACKEND" = "local" ]; then
-      # Local backend: run whisper-cli synchronously. Running multiple
-      # whisper-cli invocations in parallel contends for GPU/CPU and can
-      # destabilize Metal on Apple Silicon. Serial execution keeps the
-      # load predictable at the cost of slightly higher latency when
-      # utterances arrive faster than whisper-cli can process them.
-      convert_audio_to_text "$OUTPUT_FILE" "$utterance_seq"
-    else
-      # API backend: curl is lightweight and network-bound, so run in the
-      # background and show a spinner while we record the next utterance.
-      convert_audio_to_text "$OUTPUT_FILE" "$utterance_seq" &
-      pid=$!
-      # Only show the spinner when stdout is a real terminal and we are
-      # not in pipe-native mode — a spinner emitted into a pipe corrupts
-      # downstream consumers (jq, sed, named pipes, etc.). Also keep at
-      # most one spinner alive: a previous API call may still be running,
-      # and two spinners writing \r concurrently garble the display.
-      if [ "$STDOUT_MODE" = false ] && [ -t 1 ]; then
-        if [ -z "$spinner_pid" ] || ! kill -0 "$spinner_pid" 2>/dev/null; then
-          spinner $pid &
-          spinner_pid=$!
-        fi
-      fi
+    if ! mv "$OUTPUT_FILE" "$QUEUE_DIR/"; then
+      echo "Warning: could not queue $(basename "$OUTPUT_FILE"); skipping it" >&2
+      rm -f "$OUTPUT_FILE"
     fi
   else
+    rm -f "$OUTPUT_FILE"
     echo "No audio recorded." >&2
   fi
 

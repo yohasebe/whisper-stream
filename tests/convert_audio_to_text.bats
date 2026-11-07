@@ -472,3 +472,240 @@ STUB
   [ "$status" -ne 0 ]
   [[ "$output" != *"Hint:"* ]]
 }
+
+# --- retries and response checks ---------------------------------------------
+#
+# Scripted curl: call N runs reply_N (or the last reply defined) with the -D
+# header file as $1, and exits with that reply's status.
+
+install_scripted_curl() {
+  export CURL_CALLS="$BATS_TEST_TMPDIR/curl_calls"
+  export REPLY_DIR="$BATS_TEST_TMPDIR/replies"
+  echo 0 > "$CURL_CALLS"
+  mkdir -p "$REPLY_DIR"
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  printf '%s\n' "$arg" >> "$CURL_CAPTURE"
+done
+headers=""
+prev=""
+for arg in "$@"; do
+  [ "$prev" = "-D" ] && headers="$arg"
+  prev="$arg"
+done
+n=$(( $(cat "$CURL_CALLS") + 1 )); echo "$n" > "$CURL_CALLS"
+while [ "$n" -gt 1 ] && [ ! -f "$REPLY_DIR/$n" ]; do n=$((n - 1)); done
+bash "$REPLY_DIR/$n" "$headers"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+}
+
+# reply <call number> <script body>
+reply() {
+  printf '%s\n' "$2" > "$REPLY_DIR/$1"
+}
+
+curl_calls() {
+  cat "$CURL_CALLS"
+}
+
+@test "a transfer that fails after part of the body is a failure, not a transcript" {
+  install_scripted_curl
+  reply 1 'printf "{\"text\":\"partial result\"}\n200"; exit 28'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"partial result"* ]]
+  [[ "$output" == *"no response within 600s"* ]]
+  [ "$(curl_calls)" -eq 3 ]
+}
+
+@test "a 2xx JSON body without text is a failure" {
+  install_scripted_curl
+  reply 1 'printf "{}\n200"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected API response"* ]]
+  [[ "$output" != *"Error"* ]]
+  [ ! -s "${WORK_DIR:-.}/temp_transcriptions.txt" ]
+}
+
+@test "a 2xx body that is not JSON is a failure" {
+  install_scripted_curl
+  reply 1 'printf "<html>proxy page</html>\n200"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected API response"* ]]
+}
+
+@test "an empty transcript is a valid response" {
+  install_scripted_curl
+  reply 1 'printf "{\"text\":\"\"}\n200"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+}
+
+@test "diarized segments without speaker labels are a failure" {
+  install_scripted_curl
+  DIARIZE=true
+  MODEL="gpt-4o-transcribe-diarize"
+  CHUNKING_STRATEGY="auto"
+  reply 1 'printf "{\"segments\":[{\"start\":0,\"text\":\"hi\"}]}\n200"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected API response"* ]]
+}
+
+@test "a 503 is retried and a later success is used once" {
+  install_scripted_curl
+  reply 1 'printf "{\"error\":{\"code\":\"server_is_overloaded\"}}\n503"'
+  reply 2 'printf "{\"text\":\"second try\"}\n200"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  [ "$output" = "second try" ]
+  [ "$(curl_calls)" -eq 2 ]
+  [ "$(grep -c 'second try' temp_transcriptions.txt)" -eq 1 ]
+}
+
+@test "a rate-limit 429 is retried" {
+  install_scripted_curl
+  reply 1 'printf "{\"error\":{\"code\":\"slow_down\",\"type\":\"rate_limit_error\"}}\n429"'
+  reply 2 'printf "{\"text\":\"ok\"}\n200"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  [ "$(curl_calls)" -eq 2 ]
+}
+
+@test "billing and quota 429s are not retried" {
+  install_scripted_curl
+  local code
+  for code in credit_balance_exhausted project_spend_limit_exceeded organization_usage_limit_exceeded; do
+    echo 0 > "$CURL_CALLS"
+    reply 1 "printf '{\"error\":{\"code\":\"$code\",\"message\":\"$code\"}}\n429'"
+    run convert_audio_to_text fake.mp3
+    [ "$status" -ne 0 ]
+    [ "$(curl_calls)" -eq 1 ]
+  done
+}
+
+@test "client errors are not retried" {
+  install_scripted_curl
+  reply 1 'printf "{\"error\":{\"message\":\"Incorrect API key\"}}\n401"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [ "$(curl_calls)" -eq 1 ]
+}
+
+@test "requests stop after API_MAX_ATTEMPTS" {
+  install_scripted_curl
+  reply 1 'printf "oops\n500"'
+  API_MAX_ATTEMPTS=4
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"HTTP 500"* ]]
+  [ "$(curl_calls)" -eq 4 ]
+}
+
+@test "a Retry-After longer than the limit ends the retries" {
+  install_scripted_curl
+  reply 1 'printf "HTTP/2 429\r\nretry-after: 600\r\n\r\n" > "$1"; printf "{\"error\":{\"code\":\"slow_down\"}}\n429"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"asked to wait 600s"* ]]
+  [ "$(curl_calls)" -eq 1 ]
+}
+
+@test "retry_after_seconds reads the last header block and prefers the longer wait" {
+  printf 'HTTP/1.1 100 Continue\r\nRetry-After: 99\r\n\r\nHTTP/2 429\r\nretry-after: 3\r\nretry-after-ms: 4500\r\n\r\n' > h
+  [ "$(retry_after_seconds h)" = "5" ]
+  printf 'HTTP/2 503\r\nRetry-After: 7\r\n\r\n' > h
+  [ "$(retry_after_seconds h)" = "7" ]
+  printf 'HTTP/2 429\r\n\r\n' > h
+  [ -z "$(retry_after_seconds h)" ]
+  [ -z "$(retry_after_seconds missing)" ]
+}
+
+@test "api_backoff_delay doubles per attempt and is capped" {
+  API_RETRY_BASE_DELAY=1
+  local d1 d2 d9
+  d1=$(api_backoff_delay 1)
+  d2=$(api_backoff_delay 2)
+  d9=$(api_backoff_delay 9)
+  awk -v a="$d1" -v b="$d2" -v c="$d9" 'BEGIN { exit !(a >= 1 && a <= 2 && b >= 2 && b <= 3 && c >= 30 && c <= 31) }'
+}
+
+@test "each request has a time limit: 120 s in real time, 600 s for -f, or --api-timeout" {
+  AUDIO_FILE=""
+  touch rt.mp3
+  convert_audio_to_text rt.mp3 >/dev/null
+  grep -A1 -x -- '--max-time' "$CURL_CAPTURE" | grep -qx 120
+  : > "$CURL_CAPTURE"
+  AUDIO_FILE="fake.mp3"
+  convert_audio_to_text fake.mp3 >/dev/null
+  grep -A1 -x -- '--max-time' "$CURL_CAPTURE" | grep -qx 600
+  : > "$CURL_CAPTURE"
+  API_TIMEOUT=45
+  convert_audio_to_text fake.mp3 >/dev/null
+  grep -A1 -x -- '--max-time' "$CURL_CAPTURE" | grep -qx 45
+}
+
+@test "request temp files go into the session work dir when there is one" {
+  WORK_DIR="$BATS_TEST_TMPDIR/session"
+  mkdir -p "$WORK_DIR"
+  convert_audio_to_text fake.mp3 >/dev/null
+  local config
+  config=$(grep -A1 -x -- '--config' "$CURL_CAPTURE" | tail -1)
+  [[ "$config" == "$WORK_DIR/whisper-stream."* ]]
+  [ ! -e "$config" ]
+  [ -z "$(ls "$WORK_DIR" | grep -v temp_transcriptions.txt)" ]
+}
+
+@test "a body with more than one JSON value is a failure" {
+  install_scripted_curl
+  reply 1 'printf "{}\n{\"text\":\"accepted\"}\n200"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"accepted"* ]]
+}
+
+@test "after a retry, the transcript is piped to --pipe-to once" {
+  install_scripted_curl
+  reply 1 'printf "oops\n503"'
+  reply 2 'printf "{\"text\":\"piped\"}\n200"'
+  export PIPE_LOG="$BATS_TEST_TMPDIR/pipe.log"
+  PIPE_TO_CMD='cat >> "$PIPE_LOG"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  [ "$(cat "$PIPE_LOG")" = "piped" ]
+}
+
+@test "retry_after_seconds reads HTTP-dates and rounds milliseconds up" {
+  local future
+  future=$(LC_ALL=C date -u -r $(( $(date +%s) + 90 )) '+%a, %d %b %Y %H:%M:%S GMT' 2>/dev/null \
+    || LC_ALL=C date -u -d "@$(( $(date +%s) + 90 ))" '+%a, %d %b %Y %H:%M:%S GMT')
+  printf 'HTTP/2 503\r\nRetry-After: %s\r\n\r\n' "$future" > h
+  local wait
+  wait=$(retry_after_seconds h)
+  [ "$wait" -ge 85 ] && [ "$wait" -le 90 ]
+  printf 'HTTP/2 503\r\nRetry-After: Mon, 01 Jan 2024 00:00:00 GMT\r\n\r\n' > h
+  [ "$(retry_after_seconds h)" = "0" ]
+  printf 'HTTP/2 429\r\nretry-after-ms: 1000.1\r\n\r\n' > h
+  [ "$(retry_after_seconds h)" = "2" ]
+  printf 'HTTP/2 429\r\nretry-after: soon\r\n\r\n' > h
+  [ -z "$(retry_after_seconds h)" ]
+}
+
+@test "the wait before a retry is the server's Retry-After when it is longer than the backoff" {
+  install_scripted_curl
+  export SLEEP_LOG="$BATS_TEST_TMPDIR/sleep.log"
+  cat > "$BATS_TEST_TMPDIR/bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+echo "$1" >> "$SLEEP_LOG"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/sleep"
+  reply 1 'printf "HTTP/2 503\r\nretry-after: 7\r\n\r\n" > "$1"; printf "busy\n503"'
+  reply 2 'printf "{\"text\":\"ok\"}\n200"'
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  [ "$(cat "$SLEEP_LOG")" = "7" ]
+}

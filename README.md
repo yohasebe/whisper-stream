@@ -32,7 +32,7 @@ That's it! The `whisper-stream` command should now be available in your terminal
 
 ### Manual Installation
 
-Dependencies: `curl`, `jq`, `sox` (plus `xclip` on Linux). Optional: `whisper-cpp` for `--backend local` — see [Local backend](#local-backend-whispercpp).
+Dependencies: `jq`; `curl` for the API backend; `sox` for recording from the microphone (not needed with `-f`). On Linux, `xclip` copies results to the clipboard; without it they are saved to a file. Optional: `whisper-cpp` for `--backend local` — see [Local backend](#local-backend-whispercpp).
 
 ```bash
 brew install curl jq sox                    # macOS
@@ -71,12 +71,14 @@ The available options are:
 
 **API Options (backend=api):**
 - `-t, --token <value>`: Set the API token (only required for the OpenAI endpoint)
-- `-m, --model <value>`: Set the model. Any name is passed through to the API; unknown names only produce a warning. See [Model selection](#model-selection-api-backend).
-- `-r, --prompt <value>`: Set the prompt (works on both backends)
+- `-m, --model <value>`: Set the model. Unknown names are passed through with a warning. See [Model selection](#model-selection-api-backend).
+- `-r, --prompt <value>`: Set the prompt (works on both backends; not sent with `gpt-4o-transcribe-diarize`)
 - `-l, --language <value>`: Set the input language as an ISO 639-1 code such as `en`. With `gpt-transcribe`, give several for mixed-language speech: `-l en,ja`.
 - `--keyword <term>`: A term you expect to hear (product name, acronym, person's name). Repeat for more terms. `gpt-transcribe` only. Keywords are hints: they help the model spell a term correctly when it is spoken, and should not make it appear when it is not.
 - `--keywords-file <file>`: Read keywords from a file, one term per line (blank lines ignored). Terms may contain commas but not `<`, `>`.
 - `-tr, --translate`: Translate the transcribed text to English (local backend only)
+- `--api-timeout <sec>`: Time limit for one API request (default: 120, or 600 with `-f`). See [Failed requests](#failed-requests).
+- `--max-jobs <n>`: Maximum concurrent API requests in real-time mode (default: 4). See [Real-time queue](#real-time-queue).
 
 **Output Options:**
 - `-p, --path <value>`: Set the output directory path to create the transcription file
@@ -193,7 +195,7 @@ whisper-stream -b local --jsonl | jq -r '.text'
 ### Real-time mode notes
 
 - Per-utterance latency depends on the model size. `ggml-tiny.en` is roughly half a second on Apple Silicon; larger models scale up.
-- The local backend serializes utterances to avoid GPU contention between concurrent `whisper-cli` processes.
+- The local backend transcribes one utterance at a time to avoid GPU contention between concurrent `whisper-cli` processes. Recording continues meanwhile; see [Real-time queue](#real-time-queue).
 - On `whisper-cli` errors the affected utterance is skipped with a warning on stderr.
 
 ### Self-hosted whisper.cpp server (`--api-url`)
@@ -223,11 +225,21 @@ No API key is required when `--api-url` is set.
 - `gpt-4o-transcribe-diarize` — needed for `--diarize` (multi-speaker). Removed by OpenAI on 2027-02-26.
 - `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` — still accepted (with a warning) until OpenAI removes them on 2027-02-26. They take a single `-l` language and no keywords.
 
-Dated snapshots (e.g. `gpt-transcribe-2027-03-01`) are passed through as-is. `gpt-live-transcribe` is rejected: it works only in OpenAI's Realtime sessions, not with the file transcription endpoint this tool uses. These checks apply only to the OpenAI endpoint; with `--api-url`, model names are passed through unchecked.
+Dated snapshot names are sent as-is; the API decides whether they exist. `whisper-1` is rejected, and so is `gpt-live-transcribe`: it works only in OpenAI's Realtime sessions, not with the file transcription endpoint this tool uses. These checks apply to the OpenAI endpoint; with `--api-url` pointing at another server, model names are passed through unchecked.
 
 For translation to English, use `--backend local --translate` (whisper.cpp does this natively).
 
-API limits: 25 MB per file; formats `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`, `flac`, `ogg`, `opus` (case-insensitive; enforced for the API backend only). See the [OpenAI Speech to Text API](https://platform.openai.com/docs/guides/speech-to-text) for details.
+API limits: 25 MB per file. With the API backend, `-f` accepts the extensions `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`, `flac`, `ogg`, `opus` (case-insensitive); the [OpenAI Speech to Text guide](https://developers.openai.com/api/docs/guides/speech-to-text) lists the formats the API itself supports.
+
+## Failed requests
+
+Network errors, timeouts, and HTTP 408, 429 (rate limits), 500, 502, 503, and 504 are retried up to twice, waiting at least as long as the server's `Retry-After` asks. If the server asks for more than 60 seconds, the utterance fails instead. Other errors, including billing, spend, and quota errors, are not retried. A response that is not a transcript (for example, an HTML page from a proxy) counts as a failure. A failed utterance is skipped with a warning on stderr; in `-f` mode the exit status is non-zero.
+
+## Real-time queue
+
+Recording continues while earlier utterances are transcribed. Up to `--max-jobs` API requests run at once (one `whisper-cli` at a time with the local backend), and the other utterances wait in capture order. If 100 utterances are waiting, recording pauses until the queue shrinks, with a notice on stderr.
+
+On Ctrl-C, whisper-stream finishes the utterances it has recorded, including the one in progress, before exiting. Press Ctrl-C again to discard them and exit at once.
 
 ## Author
 
