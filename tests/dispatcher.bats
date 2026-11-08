@@ -138,9 +138,9 @@ run_dispatcher_to_completion() {
   kill_process_tree "$parent"
   wait "$parent" 2>/dev/null || true
   sleep 0.2
-  ! kill -0 "$parent" 2>/dev/null
-  ! kill -0 "${children[0]}" 2>/dev/null
-  ! kill -0 "${children[1]}" 2>/dev/null
+  ! kill -0 "$parent" 2>/dev/null || false
+  ! kill -0 "${children[0]}" 2>/dev/null || false
+  ! kill -0 "${children[1]}" 2>/dev/null || false
 }
 
 @test "the local backend dispatches to a single worker" {
@@ -267,7 +267,7 @@ STUB
   wait "$root" 2>/dev/null || true
   local pid
   for pid in "${tree[@]}"; do
-    ! kill -0 "$pid" 2>/dev/null
+    ! kill -0 "$pid" 2>/dev/null || false
   done
 }
 
@@ -283,6 +283,7 @@ QUEUE_DIR="$QUEUE_DIR"
 ACTIVE_DIR="$ACTIVE_DIR"
 STDOUT_MODE=true
 convert_audio_to_text() { echo "transcribed \$2" >> "$EVENTS"; rm -f "\$1"; }
+soxi() { [ "\$(cat "\$2")" = audio ] && echo 1.0; }
 $1
 handle_exit
 SCENARIO
@@ -299,6 +300,19 @@ printf audio > "$OUTPUT_FILE"'
   [ "$status" -eq 0 ]
   grep -qx 'transcribed 1' "$EVENTS"
   grep -qx 'transcribed 2' "$EVENTS"
+  [ ! -d "$WORK_DIR" ]
+}
+
+@test "handle_exit drops the utterance being recorded when it holds no audio yet" {
+  run_exit_scenario '
+dispatch_utterances 1 &
+DISPATCHER_PID=$!
+printf audio > "$QUEUE_DIR/output_000001.mp3"
+OUTPUT_FILE="$WORK_DIR/output_000002.mp3"
+printf header > "$OUTPUT_FILE"'
+  [ "$status" -eq 0 ]
+  grep -qx 'transcribed 1' "$EVENTS"
+  ! grep -qx 'transcribed 2' "$EVENTS" || false
   [ ! -d "$WORK_DIR" ]
 }
 

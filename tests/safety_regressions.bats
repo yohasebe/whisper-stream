@@ -20,31 +20,21 @@ setup() {
   CHUNKING_STRATEGY=""
 }
 
-# --- auth file lifecycle -----------------------------------------------------
+# --- the token never goes into a file ----------------------------------------
 
-@test "auth tempfile is removed after normal completion" {
-  convert_audio_to_text fake.mp3 >/dev/null
-
-  # Collect the --config argument paths the script handed to curl and
-  # verify that none of them still exist on disk.
-  prev=""
-  while IFS= read -r line; do
-    if [ "$prev" = "--config" ]; then
-      [ ! -e "$line" ]
-    fi
-    prev="$line"
-  done < "$CURL_CAPTURE"
-}
-
-@test "auth tempfile is created under TMPDIR with a whisper-stream prefix" {
-  convert_audio_to_text fake.mp3 >/dev/null
-  prev=""
-  while IFS= read -r line; do
-    if [ "$prev" = "--config" ]; then
-      [[ "$line" == *"/whisper-stream."* ]]
-    fi
-    prev="$line"
-  done < "$CURL_CAPTURE"
+@test "the token reaches curl on stdin, and no file under TMPDIR holds it" {
+  export TMPDIR="$BATS_TEST_TMPDIR/tmp"
+  mkdir -p "$TMPDIR"
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+grep -rl 'sk-test' "$TMPDIR" > "$BATS_TEST_TMPDIR/files_with_token" 2>/dev/null
+printf '{"text":"ok"}\n200'
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+  run convert_audio_to_text fake.mp3
+  [ "$status" -eq 0 ]
+  [ ! -s "$BATS_TEST_TMPDIR/files_with_token" ]
 }
 
 @test "mktemp failure is handled without crashing" {

@@ -10,6 +10,22 @@ a major bump.
 This file is updated when substantive changes happen; small refactors,
 comment tweaks, and cosmetic fixes are not recorded here.
 
+## [3.4.0] — 2026-11-08
+
+### Changed
+
+- **The API key no longer goes into a temporary file:** curl receives it on standard input.
+- **An API key that contains a control character, such as a line break, is rejected at startup.**
+
+### Added
+
+- **The API key can be a reference** in `OPENAI_API_KEY` or `-t`: `op://Vault/Item/field` is read with the 1Password CLI, and `keychain:<service>` from the macOS keychain. It is read once at startup. A key given directly works as before.
+
+### Fixed
+
+- **Ctrl-C during silence no longer ends with an API error:** a recording that holds no audio yet is dropped.
+- **The spinner no longer remains at the start of a transcript line.**
+
 ## [3.3.0] — 2026-11-07
 
 ### Changed

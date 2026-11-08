@@ -70,7 +70,7 @@ The available options are:
 - `--vad-model-path <file>`: Path to a ggml VAD model. Falls back to `$WHISPER_STREAM_VAD_MODEL` and then `~/.whisper-stream/models/ggml-silero-v5.1.2.bin`.
 
 **API Options (backend=api):**
-- `-t, --token <value>`: Set the API token (only required for the OpenAI endpoint)
+- `-t, --token <value>`: Set the API token (only required for the OpenAI endpoint). Accepts a reference; see [API key](#api-key).
 - `-m, --model <value>`: Set the model. Unknown names are passed through with a warning. See [Model selection](#model-selection-api-backend).
 - `-r, --prompt <value>`: Set the prompt (works on both backends; not sent with `gpt-4o-transcribe-diarize`)
 - `-l, --language <value>`: Set the input language as an ISO 639-1 code such as `en`. With `gpt-transcribe`, give several for mixed-language speech: `-l en,ja`.
@@ -104,6 +104,22 @@ The available options are:
 **Other Options:**
 - `-V, --version`: Show the version number
 - `-h, --help`: Display the help message
+
+## API key
+
+The API backend uses the key given with `-t`, or else `OPENAI_API_KEY`. Either can hold the key itself or a reference to where it is stored. A reference is read once when whisper-stream starts, and the key is kept only in memory:
+
+- `op://Vault/Item/field`: read with the [1Password CLI](https://developer.1password.com/docs/cli/) (`op read`). Install it with `brew install --cask 1password-cli`, and in the 1Password app turn on Settings › Developer › Integrate with 1Password CLI. 1Password may ask you to approve with Touch ID.
+- `keychain:<service>`: read from the macOS keychain, from a generic password whose service is `<service>`. Add it with `security add-generic-password -s <service> -a openai -w` (you are prompted for the key).
+
+```bash
+export OPENAI_API_KEY="op://Private/OpenAI/credential"
+whisper-stream
+```
+
+If the key cannot be read (the CLI is missing or not signed in, the approval prompt is dismissed, the item does not exist, or there is no answer within 60 seconds), whisper-stream stops with an explanation. Over SSH, an approval prompt on that Mac cannot be answered; if your setup needs one, set the key itself for that session.
+
+A key given with `-t` is visible to other users of the machine in the process list; prefer `OPENAI_API_KEY` or a reference.
 
 ## Examples
 

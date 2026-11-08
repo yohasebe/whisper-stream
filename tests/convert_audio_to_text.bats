@@ -60,24 +60,10 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
-@test "API token is passed via --config file (not argv)" {
+@test "API token is passed to curl as a config on stdin (not argv, not a file)" {
   convert_audio_to_text fake.mp3 >/dev/null
   grep -q 'sk-TEST-TOKEN-12345' "$CURL_CONFIG_CAPTURE"
-}
-
-@test "--config file is cleaned up after the call" {
-  convert_audio_to_text fake.mp3 >/dev/null
-  # the stub captured the --config path; verify the real file is gone
-  prev=""
-  while IFS= read -r line; do
-    if [ "$prev" = "--config" ]; then
-      [ ! -e "$line" ] || {
-        echo "leaked auth file: $line" >&2
-        return 1
-      }
-    fi
-    prev="$line"
-  done < "$CURL_CAPTURE"
+  [ "$(grep -A1 -x -- '--config' "$CURL_CAPTURE" | tail -1)" = "-" ]
 }
 
 @test "default response_format is json" {
@@ -653,10 +639,10 @@ curl_calls() {
   WORK_DIR="$BATS_TEST_TMPDIR/session"
   mkdir -p "$WORK_DIR"
   convert_audio_to_text fake.mp3 >/dev/null
-  local config
-  config=$(grep -A1 -x -- '--config' "$CURL_CAPTURE" | tail -1)
-  [[ "$config" == "$WORK_DIR/whisper-stream."* ]]
-  [ ! -e "$config" ]
+  local headers
+  headers=$(grep -A1 -x -- '-D' "$CURL_CAPTURE" | tail -1)
+  [[ "$headers" == "$WORK_DIR/whisper-stream-headers."* ]]
+  [ ! -e "$headers" ]
   [ -z "$(ls "$WORK_DIR" | grep -v temp_transcriptions.txt)" ]
 }
 

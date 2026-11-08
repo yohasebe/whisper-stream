@@ -17,7 +17,7 @@ load_whisper_stream() {
 }
 
 # Install a fake `curl` in a tmpdir-prefixed PATH so that tests can inspect
-# exactly which arguments and (via --config) which credentials the script
+# exactly which arguments and (via --config, a file or stdin) which credentials the script
 # tried to pass to the real curl.
 install_curl_stub() {
   mkdir -p "$BATS_TEST_TMPDIR/bin"
@@ -33,8 +33,12 @@ for arg in "$@"; do
 done
 prev=""
 for arg in "$@"; do
-  if [ "$prev" = "--config" ] && [ -f "$arg" ]; then
-    cat "$arg" >> "$CURL_CONFIG_CAPTURE"
+  if [ "$prev" = "--config" ]; then
+    if [ "$arg" = "-" ]; then
+      cat >> "$CURL_CONFIG_CAPTURE"
+    elif [ -f "$arg" ]; then
+      cat "$arg" >> "$CURL_CONFIG_CAPTURE"
+    fi
   fi
   prev="$arg"
 done

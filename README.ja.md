@@ -70,7 +70,7 @@ install -m 755 whisper-stream /usr/local/bin/
 - `--vad-model-path <file>`: ggml形式のVADモデルパス。未指定時は`$WHISPER_STREAM_VAD_MODEL`、それも未設定なら`~/.whisper-stream/models/ggml-silero-v5.1.2.bin`。
 
 **APIオプション(backend=api):**
-- `-t, --token <value>`: APIトークンを指定(OpenAIエンドポイント使用時のみ必須)
+- `-t, --token <value>`: APIトークンを指定(OpenAIエンドポイント使用時のみ必須)。参照も指定できます。[APIキー](#apiキー)を参照。
 - `-m, --model <value>`: モデルを指定。未知のモデル名は警告付きでそのまま渡されます。[モデル選択](#モデル選択apiバックエンド)を参照。
 - `-r, --prompt <value>`: プロンプトを指定(両バックエンドで有効。`gpt-4o-transcribe-diarize`では送信されません)
 - `-l, --language <value>`: 入力言語を`ja`のようなISO 639-1コードで指定。`gpt-transcribe`では、複数の言語が混ざる発話向けに複数指定できます: `-l ja,en`。
@@ -104,6 +104,22 @@ install -m 755 whisper-stream /usr/local/bin/
 **その他のオプション:**
 - `-V, --version`: バージョン番号を表示
 - `-h, --help`: ヘルプメッセージを表示
+
+## APIキー
+
+APIバックエンドは、`-t`で指定したキーを使い、無ければ`OPENAI_API_KEY`を使います。どちらにも、キーそのものか、キーの保存場所を示す参照を書けます。参照はwhisper-streamの起動時に一度だけ読み、キーはメモリ上にだけ保持します:
+
+- `op://Vault/Item/field`: [1Password CLI](https://developer.1password.com/docs/cli/)(`op read`)で読みます。`brew install --cask 1password-cli`でインストールし、1PasswordアプリのSettings › Developer › Integrate with 1Password CLIを有効にしてください。Touch IDでの承認を求められることがあります。
+- `keychain:<service>`: macOSのキーチェーンから、サービス名が`<service>`の汎用パスワードを読みます。`security add-generic-password -s <service> -a openai -w`で登録します(キーの入力を求められます)。
+
+```bash
+export OPENAI_API_KEY="op://Private/OpenAI/credential"
+whisper-stream
+```
+
+キーを読めない場合(CLIが無い、サインインしていない、承認の確認を閉じた、項目が無い、60秒以内に応答が無い)は、理由を表示して終了します。SSHで接続しているときは、そのMacに出る承認の確認に応答できません。承認が必要な設定の場合は、そのセッションではキーそのものを指定してください。
+
+`-t`で指定したキーは、プロセスの一覧から同じマシンの他の利用者に見えます。`OPENAI_API_KEY`か参照を使ってください。
 
 ## 使用例
 

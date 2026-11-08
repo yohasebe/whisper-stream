@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default configuration and versioning
-VERSION="3.3.0"
+VERSION="3.4.0"
 
 # Setting the default values for the script parameters
 MIN_VOLUME=1%                  # Minimum volume threshold
@@ -12,6 +12,7 @@ MIN_AUDIO_DURATION=0.3         # Skip utterances shorter than this many seconds
 MODEL="gpt-transcribe"         # Model name for the API backend
 MODEL_SET=false                # True when -m was given (the local backend warns that it is ignored)
 TOKEN=""                       # OpenAI API token (optional when --api-url points to a non-OpenAI endpoint)
+export -n TOKEN                # an inherited TOKEN must not pass the key to child processes
 OUTPUT_DIR=""                  # Directory to save the transcriptions
 PROMPT=""                      # Prompt for the API call
 LANGUAGE=""                    # Language code(s) for transcription; comma-separated for several
@@ -29,6 +30,15 @@ JSONL_SCHEMA_VERSION=1         # Schema version for JSONL output; bump on breaki
 # OpenAI removes the gpt-4o-* transcription models and whisper-1 on this date
 # (deprecation notice of 2026-08-26). Used in the startup warnings.
 OPENAI_LEGACY_STT_SHUTDOWN="2027-02-26"
+
+# API key references (op://..., keychain:...): how long to wait for the
+# password manager, which may be waiting for Touch ID or a password.
+KEY_REFERENCE_TIMEOUT=60
+OP_CLI_FALLBACKS=(
+  /opt/homebrew/bin/op
+  /usr/local/bin/op
+)
+SECURITY_CLI=/usr/bin/security  # macOS keychain
 
 # Backend selection
 BACKEND="api"                  # "api" (OpenAI or compatible) or "local" (whisper.cpp)
@@ -95,7 +105,10 @@ function display_help() {
   echo "                              then ~/.whisper-stream/models/ggml-silero-v5.1.2.bin"
   echo ""
   echo "API Options (backend=api):"
-  echo "  -t, --token <value>         Set the API token (only required for the OpenAI endpoint)"
+  echo "  -t, --token <value>         Set the API token (only required for the OpenAI endpoint)."
+  echo "                              Also \$OPENAI_API_KEY. Either may be a reference:"
+  echo "                              op://Vault/Item/field (1Password CLI) or"
+  echo "                              keychain:<service> (macOS keychain)."
   echo "  -m, --model <value>         Set the model. Unknown names are passed through"
   echo "                              with a warning. Known values:"
   echo "                              gpt-transcribe (default), gpt-4o-transcribe-diarize"
@@ -549,6 +562,261 @@ function resolve_whisper_cli() {
       return 0
     fi
   done
+  return 1
+}
+
+# Kill process $1 and all its descendants. Each process is stopped before
+# its children are listed, so no process in the tree can start one that is
+# missed, and the whole tree is collected before any kill: killing a parent
+# first would orphan its children out of reach. Processes that survive
+# SIGTERM for 2 s get SIGKILL.
+function kill_process_tree() {
+  local -a pids=("$1") alive=()
+  local i=0 pid child tries=0
+  while [ $i -lt ${#pids[@]} ]; do
+    kill -STOP "${pids[$i]}" 2>/dev/null
+    for child in $(pgrep -P "${pids[$i]}" 2>/dev/null); do
+      pids+=("$child")
+    done
+    i=$((i + 1))
+  done
+  kill -TERM "${pids[@]}" 2>/dev/null
+  kill -CONT "${pids[@]}" 2>/dev/null
+  while true; do
+    alive=()
+    for pid in "${pids[@]}"; do
+      kill -0 "$pid" 2>/dev/null && alive+=("$pid")
+    done
+    [ ${#alive[@]} -eq 0 ] && return 0
+    if [ $tries -ge 20 ]; then
+      kill -KILL "${alive[@]}" 2>/dev/null
+      return 0
+    fi
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+}
+
+# Stop process groups $@: SIGTERM, then SIGKILL for whatever is left after
+# 2 s. A group outlives its leader, so this also reaches processes that the
+# leader left behind. Safe under errexit.
+function kill_process_groups() {
+  local pgid tries=0 alive
+  for pgid in "$@"; do
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+  done
+  while true; do
+    alive=false
+    for pgid in "$@"; do
+      if kill -0 -- "-$pgid" 2>/dev/null; then
+        alive=true
+      fi
+    done
+    [ "$alive" = false ] && return 0
+    if [ $tries -ge 20 ]; then
+      for pgid in "$@"; do
+        kill -KILL -- "-$pgid" 2>/dev/null || true
+      done
+      return 0
+    fi
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+}
+
+# Run a command that prints a secret and print the secret: its single output
+# line (one trailing CR allowed). Its stdout travels through a FIFO (fd 9),
+# never a regular file. Its stderr is never shown or kept (it could hold the
+# secret): an awk filter reads all of it through another FIFO, so the
+# command cannot block on it, and reports only whether it says the approval
+# prompt was dismissed or it is not signed in, through a third FIFO (fd 8). The command and the filter each run in a
+# process group of their own, stopped as a whole before returning, so
+# nothing they started is left behind. The whole run gets $1 seconds (at
+# least 2; bash 3.2 may overrun by up to 1 s). Returns 0 on success, 123
+# when the command reports its approval prompt was dismissed, 124 on
+# timeout, 125 when the output is not one non-empty line, 126 when the
+# command reports it is not signed in or not authorized, or the command's
+# own non-zero status. Safe under errexit, as in the tests.
+function read_secret_command() {
+  local timeout=$1
+  shift
+  local dir pid filter value="" extra="" class="" status=0 more=0 deadline remaining
+  local exit_status=0 job_control=false
+  # A local inherits the export attribute of a same-named variable in the
+  # environment, which would hand the secret to every command run below.
+  export -n value extra
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/whisper-stream-key.XXXXXX") || return 1
+  if ! mkfifo -m 600 "$dir/out" "$dir/err" "$dir/class"; then
+    rm -rf "$dir"
+    return 1
+  fi
+  # Opened read-write so the filter can write its verdict without waiting.
+  exec 8<> "$dir/class"
+  # Job control gives each background job its own process group.
+  case $- in *m*) job_control=true ;; esac
+  set -m
+  "$@" < /dev/null > "$dir/out" 2> "$dir/err" &
+  pid=$!
+  LC_ALL=C awk '
+    { line = tolower($0)
+      if (line ~ /dismissed|cancel/) dismissed = 1
+      else if (line ~ /not (currently )?signed in|sign in|no account|authoriz/) signed_out = 1 }
+    END { print (dismissed ? "dismissed" : signed_out ? "signed-out" : "other") }' < "$dir/err" > "$dir/class" 2> /dev/null &
+  filter=$!
+  [ "$job_control" = true ] || set +m
+  # On Ctrl-C or another signal, stop both groups and clean up before going.
+  # (They are not in the terminal's foreground group, so Ctrl-C itself does
+  # not reach them.)
+  trap 'kill_process_groups "$pid" "$filter"; exec 9<&- 8<&-; rm -rf "$dir"; trap - INT TERM HUP; exit 130' INT TERM HUP
+  exec 9< "$dir/out"
+  deadline=$((SECONDS + timeout))
+
+  IFS= read -r -t "$timeout" -u 9 value || status=$?
+  # bash 3.2 reports a timeout as 1, as for end of input; bash 4+ as > 128.
+  # A bash 3.2 timeout is the deadline (SECONDS has one-second steps) reached
+  # while the command is still running.
+  if [ "$status" -gt 128 ] || { [ "$status" -ne 0 ] && [ -z "$value" ] \
+       && [ "$SECONDS" -ge $((deadline - 1)) ] && kill -0 "$pid" 2>/dev/null; }; then
+    status=124
+  elif [ "$status" -eq 0 ]; then
+    # Any second line, even an empty one, means this is not a single key.
+    # (Only after a complete first line: after end of input, bash 5 blocks
+    # in another `read -t` until it times out.)
+    remaining=$((deadline - SECONDS))
+    [ "$remaining" -lt 1 ] && remaining=1
+    IFS= read -r -t "$remaining" -u 9 extra || more=$?
+    if [ "$more" -eq 0 ] || [ -n "$extra" ]; then
+      status=125
+    fi
+  else
+    status=0
+  fi
+
+  # Wait for the command to exit, within the same deadline (not when the
+  # output is already known to be wrong).
+  if [ "$status" -eq 0 ]; then
+    while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      status=124
+    else
+      wait "$pid" 2>/dev/null || exit_status=$?
+    fi
+  fi
+  if [ "$status" -eq 0 ] && [ "$exit_status" -ne 0 ]; then
+    # The filter answers once all of stderr is read; a leftover process that
+    # still holds stderr open cannot hold this past the deadline.
+    status=$exit_status
+    remaining=$((deadline - SECONDS))
+    [ "$remaining" -lt 1 ] && remaining=1
+    IFS= read -r -t "$remaining" -u 8 class || true
+    case "$class" in
+      dismissed) status=123 ;;
+      signed-out) status=126 ;;
+    esac
+  fi
+  kill_process_groups "$pid" "$filter"
+  wait "$pid" "$filter" 2>/dev/null || true
+  exec 9<&- 8<&-
+  rm -rf "$dir"
+  trap - INT TERM HUP
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
+
+  value=${value%$'\r'}
+  case "$value" in
+    ""|*$'\r'*) return 125 ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+# The 1Password CLI: PATH first, then the usual Homebrew locations (a
+# launcher's PATH may lack them).
+function find_op_cli() {
+  local candidate
+  for candidate in "$(command -v op 2>/dev/null)" "${OP_CLI_FALLBACKS[@]}"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# TOKEN may be the key itself (used as is) or a reference to where it is
+# stored: op://Vault/Item/field (1Password CLI) or keychain:<service> (macOS
+# keychain). A reference is read once, here, and the key is kept only in
+# this shell's TOKEN (not exported). Messages name the reference, never the
+# key.
+function resolve_api_token() {
+  local source key status op service
+  export -n key  # see read_secret_command
+  case "$TOKEN" in
+    op://*)
+      source="1Password reference $TOKEN"
+      if ! op=$(find_op_cli); then
+        echo "Error: the API key is a 1Password reference, but the 1Password CLI (op) was not found." >&2
+        echo "       Install it (brew install --cask 1password-cli) or set the key itself." >&2
+        return 1
+      fi
+      if [ -t 2 ] && [ "$STDOUT_MODE" = false ]; then
+        echo "Reading the API key from 1Password..." >&2
+      fi
+      key=$(read_secret_command "$KEY_REFERENCE_TIMEOUT" "$op" read "$TOKEN")
+      ;;
+    keychain:*)
+      service=${TOKEN#keychain:}
+      source="keychain item \"$service\""
+      if [ -z "$service" ]; then
+        echo "Error: the API key is \"keychain:\" without a name after it." >&2
+        return 1
+      fi
+      if [ ! -x "$SECURITY_CLI" ]; then
+        echo "Error: keychain: references need the macOS keychain ($SECURITY_CLI)." >&2
+        return 1
+      fi
+      key=$(read_secret_command "$KEY_REFERENCE_TIMEOUT" "$SECURITY_CLI" find-generic-password -s "$service" -w)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+  status=$?
+  case "$status" in
+    0)
+      TOKEN=$key
+      return 0
+      ;;
+    123)
+      echo "Error: could not read the $source: the approval prompt was dismissed." >&2
+      echo "       Run whisper-stream again and approve it." >&2
+      ;;
+    124)
+      echo "Error: no answer within ${KEY_REFERENCE_TIMEOUT}s while reading the $source." >&2
+      if [ -n "${SSH_CONNECTION:-}" ]; then
+        echo "       Over SSH, an approval prompt on this Mac cannot be answered. If one is" >&2
+        echo "       needed, set the key itself in OPENAI_API_KEY for this session." >&2
+      fi
+      ;;
+    125)
+      echo "Error: the $source does not hold a single-line API key." >&2
+      ;;
+    126)
+      echo "Error: could not read the $source: the 1Password CLI is not signed in." >&2
+      echo "       Sign in, or in the 1Password app turn on Settings > Developer >" >&2
+      echo "       Integrate with 1Password CLI." >&2
+      ;;
+    *)
+      echo "Error: could not read the $source." >&2
+      if [[ "$TOKEN" == op://* ]]; then
+        echo "       Check that the vault, item, and field exist." >&2
+      else
+        echo "       Add it with: security add-generic-password -s $service -a openai -w" >&2
+      fi
+      ;;
+  esac
   return 1
 }
 
@@ -1134,6 +1402,19 @@ if [ -z "$TOKEN" ]; then
   TOKEN="${OPENAI_API_KEY:-}"
 fi
 
+# A reference (op://..., keychain:...) is read once per session, so the
+# password manager asks for approval at most once.
+if [ "$BACKEND" = "api" ] && ! resolve_api_token; then
+  exit 1
+fi
+
+# The key goes into a quoted curl config line; a control character (such as
+# a line break) would end that line and could add other settings.
+if [ "$BACKEND" = "api" ] && [[ "$TOKEN" == *[[:cntrl:]]* ]]; then
+  echo "Error: the API key contains a control character, such as a line break." >&2
+  exit 1
+fi
+
 if [ "$BACKEND" = "api" ] && [ -z "$TOKEN" ] && [ -z "$API_URL" ]; then
   echo "No OpenAI API key provided. Set OPENAI_API_KEY, pass -t, or use --api-url to point at a token-less endpoint." >&2
   exit 1
@@ -1360,6 +1641,25 @@ function dispatch_utterances() {
   fi
 }
 
+# True if the audio file decodes to a non-zero duration.
+function holds_audio() {
+  local duration
+  duration=$(soxi -D "$1" 2>/dev/null) || return 1
+  LC_ALL=C awk -v d="$duration" 'BEGIN { exit !(d + 0 > 0) }'
+}
+
+# printf for output that may share the terminal with the dispatcher's
+# spinner: on a terminal the output first erases the spinner, in the same
+# write, so the spinner cannot be left at the start of the line.
+function print_over_spinner() {
+  local format=$1
+  shift
+  if [ "$STDOUT_MODE" = false ] && [ -t 1 ]; then
+    format="\r\e[K$format"
+  fi
+  printf "$format" "$@"
+}
+
 # Called before each recording. Blocks while MAX_QUEUE utterances are
 # waiting, so a long API outage cannot fill the disk. Returns non-zero if the
 # dispatcher has died: nothing would transcribe what is recorded next.
@@ -1382,37 +1682,6 @@ function wait_for_queue_space() {
   return 0
 }
 
-# Kill process $1 and all its descendants. Each process is stopped before
-# its children are listed, so no process in the tree can start one that is
-# missed, and the whole tree is collected before any kill: killing a parent
-# first would orphan its children out of reach. Processes that survive
-# SIGTERM for 2 s get SIGKILL.
-function kill_process_tree() {
-  local -a pids=("$1") alive=()
-  local i=0 pid child tries=0
-  while [ $i -lt ${#pids[@]} ]; do
-    kill -STOP "${pids[$i]}" 2>/dev/null
-    for child in $(pgrep -P "${pids[$i]}" 2>/dev/null); do
-      pids+=("$child")
-    done
-    i=$((i + 1))
-  done
-  kill -TERM "${pids[@]}" 2>/dev/null
-  kill -CONT "${pids[@]}" 2>/dev/null
-  while true; do
-    alive=()
-    for pid in "${pids[@]}"; do
-      kill -0 "$pid" 2>/dev/null && alive+=("$pid")
-    done
-    [ ${#alive[@]} -eq 0 ] && return 0
-    if [ $tries -ge 20 ]; then
-      kill -KILL "${alive[@]}" 2>/dev/null
-      return 0
-    fi
-    sleep 0.1
-    tries=$((tries + 1))
-  done
-}
 
 # Record a single utterance into the given file, blocking until trailing
 # silence is detected (or DURATION expires). All use of the audio-capture
@@ -1684,26 +1953,13 @@ function convert_audio_to_text() {
     response_format="diarized_json"
   fi
 
-  # Per-request temp files (credentials, response headers, speaker
-  # references). In a session they go into the private WORK_DIR, so that
-  # removing it also removes them when a worker is killed mid-request.
-  # mktemp uses a portable template (mktemp -t has incompatible semantics on
-  # GNU vs BSD).
+  # Per-request temp files (response headers, speaker references). In a
+  # session they go into the private WORK_DIR, so that removing it also
+  # removes them when a worker is killed mid-request. mktemp uses a portable
+  # template (mktemp -t has incompatible semantics on GNU vs BSD). The token
+  # never goes into a file: see the curl call below.
   local temp_dir="${WORK_DIR:-${TMPDIR:-/tmp}}"
   local -a temp_files=()
-
-  # Write the API credentials to a private temp config file when a token is
-  # available. This keeps the bearer token out of argv (visible via ps).
-  local auth_file=""
-  if [ -n "$TOKEN" ]; then
-    auth_file=$(mktemp "$temp_dir/whisper-stream.XXXXXX") || {
-      echo "Error: failed to create temporary auth file" >&2
-      return 1
-    }
-    temp_files+=("$auth_file")
-    chmod 600 "$auth_file"
-    printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" > "$auth_file"
-  fi
 
   # Response headers, for the server's Retry-After.
   local header_file
@@ -1738,7 +1994,6 @@ function convert_audio_to_text() {
     --form-string "model=$MODEL"
     --form-string "response_format=$response_format"
   )
-  [ -n "$auth_file" ] && curl_args=(--config "$auth_file" "${curl_args[@]}")
 
   # Prompt is supported everywhere except on gpt-4o-transcribe-diarize*
   if [ -n "$PROMPT" ] && [[ "$MODEL" != gpt-4o-transcribe-diarize* ]]; then
@@ -1802,12 +2057,25 @@ function convert_audio_to_text() {
   # a signal (SIGINT/SIGTERM) before the explicit cleanup below.
   trap 'rm -f "${temp_files[@]}"' EXIT
 
+  local token_config_value
+  export -n token_config_value  # see read_secret_command
+  token_config_value=${TOKEN//\\/\\\\}
+  token_config_value=${token_config_value//\"/\\\"}
+
   # The whole request is retried on transient failures; the outcome of the
   # last attempt is what gets reported below.
   local attempt=1 response="" curl_status=0 http_code="" verdict retry_after delay
   while true; do
     : > "$header_file"
-    response=$(curl "${curl_args[@]}")
+    # The token reaches curl as a config on stdin (printf is a builtin): not
+    # in argv, where ps shows it, and not in a file. In the quoted config
+    # value, backslash and double quote are escaped (control characters were
+    # rejected at startup).
+    if [ -n "$TOKEN" ]; then
+      response=$(printf 'header = "Authorization: Bearer %s"\n' "$token_config_value" | curl --config - "${curl_args[@]}")
+    else
+      response=$(curl "${curl_args[@]}")
+    fi
     curl_status=$?
 
     # Split off the status line that -w appends. Only a bare 3-digit final
@@ -1977,7 +2245,7 @@ function convert_audio_to_text() {
       '{version:$version, seq:$seq, ts:$ts, model:$model, duration:$duration, languages:$languages, text:$text}' \
       || emit_rc=1
   else
-    echo "$display_text"
+    print_over_spinner '%s\n' "$display_text"
   fi
 
   if [ -n "$PIPE_TO_CMD" ]; then
@@ -1986,7 +2254,7 @@ function convert_audio_to_text() {
     # "wc -w". Unlike PROMPT/LANGUAGE (opaque data sent to the API), this value
     # is expected to be executed by the user's shell.
     result=$(echo "$display_text" | bash -c "$PIPE_TO_CMD")
-    echo "$result"
+    print_over_spinner '%s\n' "$result"
   fi
 
   # Remove the output audio file unless the `-f` option is specified
@@ -2034,16 +2302,22 @@ function handle_exit() {
   # complete). The stop request is created only after this last `mv`.
   # Another Ctrl-C stops waiting and discards the rest.
   if [ -n "${DISPATCHER_PID:-}" ]; then
-    if [ -n "${OUTPUT_FILE:-}" ] && [ -s "$OUTPUT_FILE" ] \
-       && ! mv "$OUTPUT_FILE" "$QUEUE_DIR/"; then
-      echo "Error: could not queue the utterance being recorded; it was not transcribed." >&2
-      exit_status=1
+    if [ -n "${OUTPUT_FILE:-}" ] && [ -s "$OUTPUT_FILE" ]; then
+      # Stopped before any sound passed the threshold, the file holds only
+      # an encoder header: there is nothing to transcribe.
+      if ! holds_audio "$OUTPUT_FILE"; then
+        rm -f "$OUTPUT_FILE"
+      elif ! mv "$OUTPUT_FILE" "$QUEUE_DIR/"; then
+        echo "Error: could not queue the utterance being recorded; it was not transcribed." >&2
+        exit_status=1
+      fi
     fi
     : > "$WORK_DIR/stop"
     local pending discarded=false dispatcher_status=0
     pending=$(( $(count_utterances "$QUEUE_DIR") + $(count_utterances "$ACTIVE_DIR") ))
     if [ "$pending" -gt 0 ] && kill -0 "$DISPATCHER_PID" 2>/dev/null; then
-      echo "Finishing $pending recorded utterance(s); press Ctrl-C again to discard them." >&2
+      print_over_spinner 'Finishing %s recorded utterance(s); press Ctrl-C again to discard them.\n' \
+        "$pending" >&2
     fi
     wait "$DISPATCHER_PID" 2>/dev/null
     dispatcher_status=$?
